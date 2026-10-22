@@ -187,12 +187,15 @@ export interface ThreadContext {
   /** The thread's first request, whoever wrote it: it defines the task. Clipped. */
   readonly firstPrompt: string | null;
   /** The owner's last few prompts, oldest first, clipped. Agent tells never count as his voice. */
-  readonly ownerPrompts: readonly string[];
+  readonly ownerPrompts: readonly OwnerPrompt[];
   /** The newest request of any author, unclipped: bb reports it as the "answer" when no reply came. */
   readonly latestRequest: string | null;
   /** Parent, children, then threads active in the last day beside it; newest first within each. */
   readonly siblings: readonly SiblingLine[];
 }
+
+/** One of the owner's prompts, clipped, and the seq of its turn request. */
+export type OwnerPrompt = { readonly seq: number; readonly text: string };
 
 export interface ScanResult {
   readonly ledger: TurnLedger;
@@ -210,9 +213,12 @@ export interface ThreadContextReader {
   scan(threadId: string): Promise<ScanResult>;
   /** Everything the calls are shown. Parts that can't be read are left out and logged. */
   read(threadId: string): Promise<ThreadContext>;
+  /** The agent's last message before the event `seq`: what a prompt at `seq` answers. null when there is none. */
+  messageBefore(threadId: string, seq: number): Promise<string | null>;
 }
 
 const seqOf = z.object({ seq: z.number() });
+const agentMessageEvent = z.object({ data: z.object({ item: z.object({ type: z.literal("agentMessage"), text: z.string() }) }) });
 
 /** The latest prompt gets room (the answer responds to it); earlier ones are background. */
 const OWNER_PROMPTS = 3;
@@ -222,6 +228,8 @@ const FIRST_PROMPT_CHARS = 2_500;
 /** Turn requests read for the owner's prompts: enough to reach past a run of agent reports. */
 const RECENT_TURNS = 40;
 const SIBLINGS = 8;
+/** Items read back from a prompt for the message before it: a turn's last item is its message. */
+const ITEMS_BEFORE = 20;
 const SIBLING_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 function clipEnd(text: string, max: number): string {
@@ -352,15 +360,31 @@ export function createThreadContextReader(bb: BbPluginApi, startOrigins: StartOr
       now: bangkokNow(now),
       ledger: stored.success ? stored.data : EMPTY_LEDGER,
       firstPrompt: firstTurn && firstTurn.text.trim() !== "" ? clipEnd(firstTurn.text.trim(), FIRST_PROMPT_CHARS) : null,
-      ownerPrompts: owner.map((turn, index, all) =>
-        clipMiddleKeepEnd(turn.text.trim(), index === all.length - 1 ? LATEST_PROMPT_CHARS : EARLIER_PROMPT_CHARS),
-      ),
+      ownerPrompts: owner.map((turn, index, all) => ({
+        seq: turn.seq,
+        text: clipMiddleKeepEnd(turn.text.trim(), index === all.length - 1 ? LATEST_PROMPT_CHARS : EARLIER_PROMPT_CHARS),
+      })),
       latestRequest: turns[0]?.text.trim() || null,
       siblings,
     };
   }
 
-  return { facts, scan, read };
+  async function messageBefore(threadId: string, seq: number): Promise<string | null> {
+    const rows = await bb.sdk.threads.events.list({
+      threadId,
+      types: ["item/completed"],
+      beforeSeq: String(seq),
+      order: "desc",
+      limit: String(ITEMS_BEFORE),
+    });
+    for (const row of rows) {
+      const message = agentMessageEvent.safeParse(row);
+      if (message.success && message.data.data.item.text.trim() !== "") return message.data.data.item.text.trim();
+    }
+    return null;
+  }
+
+  return { facts, scan, read, messageBefore };
 }
 
 /** As suggest.ts clips an answer: the start for context, the end kept whole. */

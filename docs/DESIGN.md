@@ -91,6 +91,11 @@ calls read.
   `structured_output` is parsed with the same schema the flag was derived
   from; `is_error`, unreadable output and a schema mismatch are failures.
   `stats` (time, tokens, turns, refused tools) come from the same result.
+- **Timeouts fit max effort.** A suggestion call may take 6 min, a draft 60 s,
+  a card run 240 s. Measured on one live thread with Haiku 5.5 at max: a
+  suggestion 176 s and 258 s (40k and 60k thinking tokens; 7 s at low), and
+  one run that hit the 64k output cap at about 5 min, restarted its thinking
+  and was cut at 6 min; a draft 14 s; a card 113–128 s.
 - **At most four suggestion calls at once.** A burst of threads finishing
   together queues. A call waiting its turn shows nothing; one whose thread
   moves on while it waits never starts. Draft calls are never held up.
@@ -118,11 +123,15 @@ calls read.
   thread; `cardRuns` (1–3) run at once. Nothing about the queue is persisted:
   after a restart the next owner turn derives the trigger again, and a run that
   dies writes nothing.
-- **The packet**, gathered by code: the thread context above, the open q1/q2
+- **The packet**, gathered by code: the thread context above, the recent
+  conversation (each of the owner's prompts after the agent message it
+  answers, read from the `item/completed` events before it, then the thread's
+  latest answer, each message once), the open q1/q2
   cards of `otask matrix` (5 s cap; nothing else from the matrix leaves the
   plugin), today's «Фокус» and «Деньги» from the newest morning brief when it is
   today's, the environment path when it exists on this machine, and the
-  previous card. Failed sources become `gaps`.
+  previous card. Failed sources become `gaps`; a gap the model restates for the
+  same source is dropped.
 - **The run**: `callClaude` with `--restricted`, `--tools Read,Grep,Glob,Bash`,
   `--allowedTools Read Grep Glob "Bash(ov find:*)"`, `--add-dir` the
   environment path, `--max-turns 12`, each Bash command capped at 12 s through
@@ -225,7 +234,8 @@ fixtures, with delays, gates, failures, usage and refused tools.
   dismissals, examples in the next prompt, `stats` filters, a reload, pruning
   and retention.
 - `cards.test.mjs` — one card on the first message today and its v1 shape, the
-  run's confinement flags, only open q1/q2 goals and today's focus sent, gaps,
+  run's confinement flags, the recent conversation it reads, only
+  open q1/q2 goals and today's focus sent, gaps and restated gaps,
   suggestions not waiting for a run, coalescing, the two-run cap, new-day and
   stale rebuilds, failure backoff, a reloaded plugin, `card --refresh`,
   `cards`, card costs in `stats`, cards off, agent-only threads.

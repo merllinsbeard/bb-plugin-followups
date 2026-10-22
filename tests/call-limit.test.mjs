@@ -22,7 +22,14 @@ async function full({ failFirst = 0 } = {}) {
   const forWhom = (n) => /(t\d+)'s answer\./.exec(w.claude.calls("suggest")[n - 1].stdin)?.[1];
   return Object.assign(w, { forWhom, started: () => w.claude.calls("suggest").length });
 }
-const burst = async (w, ids) => { for (const id of ids) await w.idle(id); };
+/** Threads finish one after another: each has started its call or joined the queue before the next finishes. */
+const burst = async (w, ids) => {
+  for (const id of ids) {
+    const before = w.started();
+    await w.idle(id);
+    await until(() => w.started() > before || w.logs().some((m) => m.includes(`${id} is waiting for a free slot`)));
+  }
+};
 
 test("no more than four calls run at once, and the rest show nothing while they wait", async () => {
   const w = await full();

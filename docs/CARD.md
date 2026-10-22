@@ -67,7 +67,8 @@ bb followups cards --project <id> --json
 ## What goes into it
 
 Plugin code gathers the exact and private parts before the model runs: the Bangkok
-clock, the thread's first prompt and the owner's own last prompts, up to eight threads
+clock, the thread's first prompt, the owner's own last prompts each after the agent
+message it answers, the thread's latest answer, up to eight threads
 around it, the owner's open «Срочно и важно» and «Важно, несрочно» cards from the task
 matrix (`otask matrix`; nothing else from it ever leaves the plugin), and today's
 «Фокус» and «Деньги» from the morning brief when there is one for today.

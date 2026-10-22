@@ -98,6 +98,7 @@ test("the run may only read the project and run `ov find`, with each call capped
   assert.deepEqual(call.argv.slice(call.argv.indexOf("--allowedTools") + 1, call.argv.indexOf("--allowedTools") + 5), ["Read", "Grep", "Glob", "Bash(ov find:*)"]);
   assert.equal(flag(call, "--add-dir"), project);
   assert.equal(flag(call, "--max-turns"), "12");
+  assert.equal(flag(call, "--effort"), "max");
   assert.equal(call.bashTimeoutMs, "12000");
   assert.match(call.stdin, new RegExp(`<project_dir>${project}</project_dir>`));
   assert.deepEqual(card(w).gaps, []);
@@ -127,6 +128,36 @@ test("a missing matrix and an old brief are recorded as gaps, and the card is st
   const { gaps } = card(w);
   assert.ok(gaps.some((gap) => gap.startsWith("matrix: ")), JSON.stringify(gaps));
   assert.ok(gaps.includes("focus: no brief today"), JSON.stringify(gaps));
+  await w.dispose();
+});
+
+test("the run reads each of the owner's prompts after the agent message it answers, then the latest answer", async () => {
+  ownerHome();
+  const w = await cardsOn({
+    threads: {
+      t1: { turns: [{ source: "spawn", text: "Build the parser" }, { reply: "PARSER-DONE. Add the CLI next?" }], answer: "CLI-ADDED, try --help." },
+      t2: { turns: [{ source: "spawn", text: "Write the docs" }, { reply: "DOCS-DRAFTED. Publish them?" }], answer: "DOCS-DRAFTED. Publish them?" },
+    },
+  });
+  await w.say("t1", "yes, and how often does it run?");
+  await w.say("t2", "not yet");
+  await until(() => card(w, "t1") && card(w, "t2"));
+  const stdinOf = (id) => cardCalls(w).find((call) => call.stdin.includes(`<thread role="root">${id}</thread>`)).stdin;
+  assert.match(
+    stdinOf("t1"),
+    /<recent_conversation>\n\[owner\] Build the parser\n\n\[agent\] PARSER-DONE\. Add the CLI next\?\n\n\[owner\] yes, and how often does it run\?\n\n\[agent, latest answer\] CLI-ADDED, try --help\.\n<\/recent_conversation>/,
+  );
+  // The thread hasn't answered since: its latest answer is the message the prompt answers, shown once.
+  assert.equal(stdinOf("t2").match(/DOCS-DRAFTED/g).length, 1);
+  await w.dispose();
+});
+
+test("a gap the model restates in its own words is listed once", async () => {
+  ownerHome({ briefs: {} });
+  const w = await cardsOn({ claude: { card: { output: { ...CARD_DRAFT, gaps: ["focus: брифа на сегодня нет", "ov: timeout", "ov: timeout"] } } } });
+  await w.say("t1", "Build the parser");
+  await until(() => card(w));
+  assert.deepEqual(card(w).gaps, ["focus: no brief today", "project files: not on this machine", "ov: timeout"]);
   await w.dispose();
 });
 

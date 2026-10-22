@@ -103,8 +103,8 @@ const defaultAnswers = () => ({
 /**
  * A fake BB. `threads` maps id -> { status, parent, visibility, title, projectId, sectionId,
  * originPluginId, environmentId, answer, turns }. `turns` are the thread's turn requests,
- * `{ initiator, source, sender, text, at }`; by default one `user`/`spawn` turn that started it
- * (an owner's for a root thread, an agent's spawn for a child). `claude` overrides the fake
+ * `{ initiator, source, sender, text, at }`, and its agent's messages, `{ reply }`; by default one
+ * `user`/`spawn` turn that started it (an owner's for a root thread, an agent's spawn for a child). `claude` overrides the fake
  * claude's answers; `metadata` seeds stored plugin metadata (`{ [pluginId]: { [threadId]: … } }`
  * or, for this plugin, `{ [threadId]: … }`). `environments` maps environment id -> path.
  * Thread cards are off unless a test turns them on (`settings: { card: true }`), so only the
@@ -142,6 +142,16 @@ export async function boot({ threads = { t1: {} }, settings = {}, claude = {}, m
       data: { initiator, source, senderThreadId: sender, input: [{ type: "text", text }] },
     });
   };
+  const addReply = (id, { reply, at = Date.now() }) => {
+    world.seq += 1;
+    (world.events[id] ??= []).push({
+      seq: world.seq,
+      createdAt: at,
+      type: "item/completed",
+      threadId: id,
+      data: { item: { type: "agentMessage", id: `item${world.seq}`, text: reply } },
+    });
+  };
   const addThread = (id, spec = {}) => {
     world.threads[id] = {
       status: "idle",
@@ -159,7 +169,7 @@ export async function boot({ threads = { t1: {} }, settings = {}, claude = {}, m
       ...spec,
     };
     const turns = spec.turns ?? [{ initiator: "user", source: "spawn", text: `${id}: please do the task.` }];
-    for (const turn of turns) addTurn(id, { at: now - 3_000_000, ...turn });
+    for (const turn of turns) (turn.reply !== undefined ? addReply : addTurn)(id, { at: now - 3_000_000, ...turn });
   };
   for (const [id, spec] of Object.entries(threads)) addThread(id, spec);
 
@@ -240,10 +250,11 @@ export async function boot({ threads = { t1: {} }, settings = {}, claude = {}, m
             .slice(0, Number(limit ?? 20))
             .map((event) => ({ input: event.data.input })),
         events: {
-          list: async ({ threadId, types, afterSeq, order = "asc", limit = "100" }) => {
+          list: async ({ threadId, types, afterSeq, beforeSeq, order = "asc", limit = "100" }) => {
             if (world.eventsFails) throw new Error("events are down");
             let rows = (world.events[threadId] ?? []).filter((event) => !types || types.includes(event.type));
             if (afterSeq !== undefined) rows = rows.filter((event) => event.seq > Number(afterSeq));
+            if (beforeSeq !== undefined) rows = rows.filter((event) => event.seq < Number(beforeSeq));
             if (order === "desc") rows = [...rows].reverse();
             return structuredClone(rows.slice(0, Number(limit)));
           },

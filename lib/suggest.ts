@@ -58,7 +58,11 @@ export interface Picked {
   readonly why: string | null;
 }
 
-export const SUGGEST_TIMEOUT_MS = 60_000;
+/**
+ * Live, Haiku 5.5 at max: 176 s and 258 s (40k and 60k thinking tokens); one run hit the 64k
+ * output cap and restarted, which no timeout bounds. At low: 7 s.
+ */
+export const SUGGEST_TIMEOUT_MS = 360_000;
 export const DRAFT_TIMEOUT_MS = 60_000;
 /** How much of the answer the model sees when suggesting and when drafting. */
 const SUGGEST_ANSWER_CHARS = 6_000;
@@ -153,7 +157,7 @@ function renderExamples(examples: readonly LearningExample[]): string {
 function renderThread(input: SuggestInput, answerChars: number): string {
   const { ctx } = input;
   const prompts = ctx.ownerPrompts
-    .map((text, index, all) => `[${index === all.length - 1 ? "latest" : "earlier"}] ${text}`)
+    .map(({ text }, index, all) => `[${index === all.length - 1 ? "latest" : "earlier"}] ${text}`)
     .join("\n\n");
   return [
     `<now>${renderNow(ctx.now)}</now>`,
