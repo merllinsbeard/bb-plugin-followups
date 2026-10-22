@@ -11,19 +11,9 @@
 // disappears on the next refresh.
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import type { KeyboardEvent } from "react";
-import {
-  definePluginApp,
-  experimental_ProviderModelPicker as ProviderModelPicker,
-  useComposer,
-  useRealtime,
-  useRpc,
-} from "@get-bb/plugin-sdk/app";
-import type {
-  ExperimentalProviderModelPickerValue,
-  PluginSettingsSectionProps,
-  PluginThreadHeaderActionProps,
-} from "@get-bb/plugin-sdk/app";
-import type { FollowupStats, ModelSelection, rpcContract } from "./server";
+import { definePluginApp, useComposer, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
+import type { PluginThreadHeaderActionProps } from "@get-bb/plugin-sdk/app";
+import type { FollowupStats, rpcContract } from "./server";
 import { Button } from "@/components/ui/button";
 import { Glyph, GLYPHS } from "@/components/glyph";
 import type { GlyphName } from "@/components/glyph";
@@ -752,172 +742,6 @@ function DismissButton({
   );
 }
 
-function pickerValueFromSelection(
-  selection: ModelSelection | null,
-): ExperimentalProviderModelPickerValue | null {
-  if (!selection) return null;
-  return {
-    providerId: selection.providerId,
-    model: selection.model,
-    reasoningLevel: selection.reasoningLevel,
-    ...(selection.serviceTier ? { serviceTier: selection.serviceTier } : {}),
-  };
-}
-
-function ModelSettingsSection(_props: PluginSettingsSectionProps) {
-  const rpc = useRpc<typeof rpcContract>();
-  const [selection, setSelection] = useState<ModelSelection | null>(null);
-  const [configured, setConfigured] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(
-    (background = false) => {
-      if (!background) setLoading(true);
-      rpc.call("followups_model_get", {}).then(
-        (next) => {
-          setSelection(next.selection);
-          setConfigured(next.configured);
-          setError(null);
-          if (!background) setLoading(false);
-        },
-        (cause: unknown) => {
-          setError(errorText(cause));
-          if (!background) setLoading(false);
-        },
-      );
-    },
-    [rpc],
-  );
-
-  useEffect(() => {
-    load(false);
-  }, [load]);
-
-  useRealtime(CHANGED, (payload: unknown) => {
-    if (
-      payload &&
-      typeof payload === "object" &&
-      "model" in payload &&
-      (payload as { model: unknown }).model === true
-    ) {
-      load(true);
-    }
-  });
-
-  const onChange = useCallback(
-    (next: ExperimentalProviderModelPickerValue) => {
-      const serviceTier =
-        next.serviceTier === "default" || next.serviceTier === "fast"
-          ? next.serviceTier
-          : undefined;
-      const nextSelection: ModelSelection = {
-        providerId: next.providerId,
-        model: next.model,
-        // The server's rpc input schema rejects a level outside BB's set.
-        reasoningLevel: next.reasoningLevel as ModelSelection["reasoningLevel"],
-        ...(serviceTier ? { serviceTier } : {}),
-      };
-      setSelection(nextSelection);
-      setSaving(true);
-      setError(null);
-      rpc
-        .call("followups_model_set", nextSelection)
-        .then((result) => {
-          setSelection(result.selection);
-          setConfigured(true);
-        })
-        // The optimistic pick didn't stick; show what is actually saved.
-        .catch((cause: unknown) => {
-          setError(errorText(cause));
-          load(true);
-        })
-        .finally(() => setSaving(false));
-    },
-    [rpc, load],
-  );
-
-  const reset = useCallback(() => {
-    setSaving(true);
-    setError(null);
-    rpc
-      .call("followups_model_clear", {})
-      .then(() => load(false))
-      .catch((cause: unknown) => setError(errorText(cause)))
-      .finally(() => setSaving(false));
-  }, [rpc, load]);
-
-  const pickerValue = pickerValueFromSelection(selection);
-
-  return (
-    <div className="space-y-2 text-sm">
-      {loading ? (
-        <p
-          role="status"
-          className="flex items-center gap-2 text-xs text-muted-foreground"
-        >
-          <Icon
-            name="Spinner"
-            className="size-3.5 animate-spin motion-reduce:animate-none"
-          />
-          Loading BB models…
-        </p>
-      ) : pickerValue ? (
-        <ProviderModelPicker
-          value={pickerValue}
-          onChange={onChange}
-          align="start"
-          className="w-full"
-          disabled={saving}
-        />
-      ) : (
-        <div className="flex items-center gap-2">
-          <p className="text-sm text-muted-foreground">
-            BB&apos;s model catalog is unavailable.
-          </p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7"
-            onClick={() => load(false)}
-          >
-            Try again
-          </Button>
-        </div>
-      )}
-      {error ? (
-        <p role="alert" className="text-sm text-destructive">
-          {error}
-        </p>
-      ) : null}
-      {pickerValue ? (
-        <div className="flex min-h-7 items-center gap-2 text-xs text-muted-foreground">
-          <span role="status">
-            {saving
-              ? "Saving…"
-              : configured
-                ? "Using your saved model."
-                : "Using BB’s primary default model."}
-          </span>
-          {configured && !saving ? (
-            <Button
-              type="button"
-              variant="link"
-              size="sm"
-              className="h-auto p-0 text-xs text-muted-foreground hover:text-foreground"
-              onClick={reset}
-            >
-              Reset to default
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 export default definePluginApp((app) => {
   app.composer.customize({
     id: "followups",
@@ -930,12 +754,5 @@ export default definePluginApp((app) => {
     id: "switch",
     title: "Follow-ups",
     component: ThreadSwitch,
-  });
-  app.slots.settingsSection({
-    id: "model",
-    title: "Follow-ups model",
-    description:
-      "Choose the model that drafts follow-up prompts. Without a saved choice, BB's primary default is used.",
-    component: ModelSettingsSection,
   });
 });

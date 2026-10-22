@@ -2,7 +2,6 @@
 dist/
 node_modules/
 coverage/
-.local/followups-runs/
 *.tsbuildinfo
 
 # bb and agent workspace state (chat copies, notes, local settings)
