@@ -12,8 +12,18 @@ import { randomUUID } from "node:crypto";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { callClaude, EFFORTS, type CallStats, type Effort, type ModelChoice } from "./lib/claude.ts";
+import { openLearning, type AcceptanceStats, type Learning } from "./lib/learning.ts";
 import { createStartOriginStore } from "./lib/start-origin.ts";
-import { cleanDraft, draftCall, KINDS, openQuestions, pickThree, suggestCall, SUGGEST_TIMEOUT_MS } from "./lib/suggest.ts";
+import {
+  cleanDraft,
+  draftCall,
+  KINDS,
+  openQuestions,
+  pickThree,
+  suggestCall,
+  SUGGEST_TIMEOUT_MS,
+  type LearningExample,
+} from "./lib/suggest.ts";
 import {
   createThreadContextReader,
   ledgerSchema,
@@ -127,6 +137,33 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** `--days <n>` (default 7) and `--project <id>`; null for anything else. */
+function statsOptions(args: string[]): { days: number; projectId?: string } | null {
+  let days = 7;
+  let projectId: string | undefined;
+  for (let index = 0; index < args.length; index += 2) {
+    const [name, value] = [args[index], args[index + 1]];
+    if (value === undefined) return null;
+    if (name === "--days" && /^\d+$/.test(value) && Number(value) > 0) days = Number(value);
+    else if (name === "--project") projectId = value;
+    else return null;
+  }
+  return projectId === undefined ? { days } : { days, projectId };
+}
+
+function describeStats(stats: AcceptanceStats, projectId: string | undefined): string {
+  const scope = projectId === undefined ? "" : ` in project ${projectId}`;
+  const percent = stats.acceptance === null ? "n/a" : `${Math.round(stats.acceptance * 100)}%`;
+  const kinds = Object.entries(stats.byKind)
+    .filter(([, count]) => count.shown > 0)
+    .map(([kind, count]) => `${kind} ${count.shown}/${count.picked}`);
+  return [
+    `Last ${stats.days} day(s)${scope}: ${stats.batches} banner(s) in ${stats.threads} thread(s).`,
+    `Answered ${stats.answered}: ${stats.sentAsIs} sent as drafted, ${stats.sentEdited} edited, ${stats.ownMessage} own message(s). Acceptance ${percent}. Dismissed ${stats.dismissed}.`,
+    kinds.length > 0 ? `By kind (shown/picked): ${kinds.join(", ")}.` : "Nothing shown yet.",
+  ].join("\n");
+}
+
 /** The banner footer's shape: the call's cost with a token total. */
 function bannerStats(stats: CallStats): FollowupStats {
   const parts = [stats.inputTokens, stats.cachedInputTokens, stats.outputTokens];
@@ -183,6 +220,33 @@ export default async function plugin(bb: BbPluginApi) {
 
   /** Set when the plugin is being reloaded or disabled: nothing new may start, and nothing may log or write. */
   let disposed = false;
+
+  /** Null when the plugin's database can't be opened: follow-ups still work, they just don't learn. */
+  let learning: Learning | null = null;
+  try {
+    learning = openLearning(bb.storage.database(), (db, statements) => bb.storage.migrate(db, statements), () => randomUUID());
+  } catch (error) {
+    bb.log.warn(`followups won't learn from what you pick: its database can't be opened: ${errorMessage(error)}`);
+  }
+  /** Bookkeeping never breaks a suggestion or a draft. */
+  function learn(what: string, record: (learning: Learning) => void): void {
+    if (!learning || disposed) return;
+    try {
+      record(learning);
+    } catch (error) {
+      bb.log.warn(`followups could not record ${what}: ${errorMessage(error)}`);
+    }
+  }
+  /** The owner's recent picks and sends, shown to the model; none when they can't be read. */
+  function examplesFor(threadId: string, projectId: string): LearningExample[] {
+    if (!learning || disposed) return [];
+    try {
+      return learning.examples(threadId, projectId);
+    } catch (error) {
+      bb.log.warn(`followups could not read past picks for ${threadId}: ${errorMessage(error)}`);
+      return [];
+    }
+  }
   /** Threads with a generation currently running, each with that run (see `generate`). */
   const inFlight = new Map<string, Promise<void>>();
   /** Idle events that arrived while a generation was running. */
@@ -299,7 +363,8 @@ export default async function plugin(bb: BbPluginApi) {
   /** Read the thread's new turns into its ledger. A failed read leaves the stored ledger to decide. */
   async function scanTurns(threadId: string): Promise<void> {
     try {
-      await context.scan(threadId);
+      const { newOwnerTurns } = await context.scan(threadId);
+      for (const turn of newOwnerTurns) learn("what the owner sent", (from) => from.ownerSent(threadId, turn.text, turn.at));
     } catch (error) {
       if (!disposed) bb.log.warn(`followups could not read who wrote in ${threadId}: ${errorMessage(error)}`);
     }
@@ -662,7 +727,15 @@ export default async function plugin(bb: BbPluginApi) {
       }
       const hasOpenQuestions = openQuestions(lastAssistantText);
       const { value, stats } = await callClaude(
-        suggestCall({ ctx, cardText: null, answer: lastAssistantText, hasOpenQuestions, examples: [], choice, signal: abort.signal }),
+        suggestCall({
+          ctx,
+          cardText: null,
+          answer: lastAssistantText,
+          hasOpenQuestions,
+          examples: examplesFor(threadId, ctx.thread.projectId),
+          choice,
+          signal: abort.signal,
+        }),
       );
       clock.lap("model");
       if (cancel.isStale()) {
@@ -696,6 +769,7 @@ export default async function plugin(bb: BbPluginApi) {
           `${stats.inputTokens ?? "?"} input + ${stats.cachedInputTokens ?? "?"} cached + ${stats.outputTokens ?? "?"} output tokens (${stats.model})`,
       );
       await writeState(threadId, { status: "ready", suggestions, stats: bannerStats(stats) }).catch(() => undefined);
+      learn("the shown follow-ups", (from) => from.shown(threadId, ctx.thread.projectId, suggestions));
     } catch (error) {
       if (disposed) return;
       if (cancel.isStale()) {
@@ -761,7 +835,7 @@ export default async function plugin(bb: BbPluginApi) {
           cardText: null,
           answer,
           hasOpenQuestions: openQuestions(answer),
-          examples: [],
+          examples: examplesFor(threadId, ctx.thread.projectId),
           choice,
           signal: cancel.signal,
           picked: { label: picked.label, kind: picked.kind ?? null, why: picked.why ?? null },
@@ -878,8 +952,14 @@ export default async function plugin(bb: BbPluginApi) {
       return bannerState(await readState(threadId));
     },
     followups_set_enabled: ({ threadId, enabled: on }) => setThreadEnabled(threadId, on),
-    followups_expand: ({ threadId, id }) => expandFollowup(threadId, id),
+    followups_expand: async ({ threadId, id }) => {
+      const result = await expandFollowup(threadId, id);
+      // Only the banner's click counts as his pick; `bb followups draft` is a diagnostic.
+      learn("the picked follow-up", (from) => from.drafted(threadId, id, result.text));
+      return result;
+    },
     followups_dismiss: async ({ threadId }) => {
+      learn("the dismissal", (from) => from.dismissed(threadId));
       await clearFollowups(threadId, "dismissed");
       return { dismissed: true as const };
     },
@@ -896,6 +976,7 @@ export default async function plugin(bb: BbPluginApi) {
     "  bb followups cleanup [--dry-run] [--json]",
     "  bb followups regenerate <thread-id> [--json]",
     "  bb followups draft <thread-id> <suggestion-id> [--json]",
+    "  bb followups stats [--days <n>] [--project <project-id>] [--json]",
   ].join("\n");
   bb.cli.register({
     name: "followups",
@@ -910,6 +991,7 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "cleanup", summary: "Delete the hidden worker threads earlier releases left behind", usage: "bb followups cleanup [--dry-run] [--json]" },
       { name: "regenerate", summary: "Draft a thread's follow-ups again now, and show where the time went", usage: "bb followups regenerate <thread-id> [--json]" },
       { name: "draft", summary: "Run the draft step for a suggestion, and show where the time went", usage: "bb followups draft <thread-id> <suggestion-id> [--json]" },
+      { name: "stats", summary: "How often the owner sent a suggested follow-up, by kind", usage: "bb followups stats [--days <n>] [--project <project-id>] [--json]" },
     ],
     async run(argv) {
       const json = argv.includes("--json");
@@ -1039,6 +1121,13 @@ export default async function plugin(bb: BbPluginApi) {
               result.text,
             ].join("\n"),
           );
+        }
+        case "stats": {
+          const options = statsOptions(args);
+          if (!options) break;
+          if (!learning) return { exitCode: 1, stderr: "Follow-up statistics are unavailable: the plugin database can't be opened.\n" };
+          const stats = learning.stats(options);
+          return reply(stats, describeStats(stats, options.projectId));
         }
         case "cleanup": {
           if (args.some((arg) => arg !== "--dry-run")) break;
