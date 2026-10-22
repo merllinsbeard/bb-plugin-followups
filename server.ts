@@ -12,7 +12,9 @@ import { randomUUID } from "node:crypto";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { callClaude, EFFORTS, type CallStats, type Effort, type ModelChoice } from "./lib/claude.ts";
-import { openLearning, type AcceptanceStats, type Learning } from "./lib/learning.ts";
+import { CARD_RUN_MIGRATIONS, createCardService, type CardRunSummary, type CardStatus } from "./lib/card.ts";
+import { renderCard } from "./lib/card-contract.ts";
+import { LEARNING_MIGRATIONS, openLearning, type AcceptanceStats, type Learning } from "./lib/learning.ts";
 import { createStartOriginStore } from "./lib/start-origin.ts";
 import {
   cleanDraft,
@@ -25,6 +27,7 @@ import {
   type LearningExample,
 } from "./lib/suggest.ts";
 import {
+  bangkokNow,
   createThreadContextReader,
   ledgerSchema,
   META_TURNS,
@@ -102,6 +105,13 @@ const META_OVERRIDE = "override";
 
 const DEFAULT_MODEL = "claude-haiku-5-5";
 const DEFAULT_EFFORT: Effort = "max";
+const DEFAULT_CARD_RUNS = 2;
+
+/**
+ * The plugin database's one migration list: the host numbers statements by their index, so
+ * every module's statements go here, new ones at the end, shipped ones never edited.
+ */
+const MIGRATIONS = [...LEARNING_MIGRATIONS, ...CARD_RUN_MIGRATIONS];
 /**
  * Suggestion calls running at once. Every visible thread that finishes gets one,
  * so a burst (an agent team finishing together) would otherwise start a `claude`
@@ -164,6 +174,41 @@ function describeStats(stats: AcceptanceStats, projectId: string | undefined): s
   ].join("\n");
 }
 
+function describeCardRuns(summary: CardRunSummary | null): string {
+  if (summary === null || summary.runs === 0) return "Thread cards: no runs.";
+  const seconds = summary.p50Ms === null ? "n/a" : `${(summary.p50Ms / 1000).toFixed(1)}s`;
+  return (
+    `Thread cards: ${summary.runs} run(s), ${summary.failed} failed, median ${seconds}; ` +
+    `tokens ${summary.inputTokens.toLocaleString("en-US")} input, ${summary.cachedInputTokens.toLocaleString("en-US")} cached, ` +
+    `${summary.outputTokens.toLocaleString("en-US")} output` +
+    (summary.withDeniedTools > 0 ? `; ${summary.withDeniedTools} run(s) had a tool call refused.` : ".")
+  );
+}
+
+function describeCard(threadId: string, status: CardStatus): string {
+  const lines = status.card ? [renderCard(status.card, Date.now())] : [`No card for ${threadId} yet.`];
+  if (status.attempt && !status.attempt.ok) {
+    lines.push(`Last build failed at ${new Date(status.attempt.at).toISOString()}: ${status.attempt.error ?? "no detail"}`);
+  }
+  if (status.building) lines.push("A build is running.");
+  else if (status.queued) lines.push("A build is queued.");
+  return lines.join("\n");
+}
+
+/** `--project <id>` and `--day today|YYYY-MM-DD`; null for anything else. */
+function cardsFilter(args: string[]): { projectId?: string; day?: string } | null {
+  const filter: { projectId?: string; day?: string } = {};
+  for (let index = 0; index < args.length; index += 2) {
+    const [name, value] = [args[index], args[index + 1]];
+    if (value === undefined) return null;
+    if (name === "--project") filter.projectId = value;
+    else if (name === "--day" && value === "today") filter.day = bangkokNow(Date.now()).day;
+    else if (name === "--day" && /^\d{4}-\d{2}-\d{2}$/.test(value)) filter.day = value;
+    else return null;
+  }
+  return filter;
+}
+
 /** The banner footer's shape: the call's cost with a token total. */
 function bannerStats(stats: CallStats): FollowupStats {
   const parts = [stats.inputTokens, stats.cachedInputTokens, stats.outputTokens];
@@ -197,15 +242,35 @@ export default async function plugin(bb: BbPluginApi) {
       options: [...EFFORTS],
       default: DEFAULT_EFFORT,
     },
+    card: {
+      type: "boolean",
+      label: "Thread cards",
+      description:
+        "Build a short card per thread you write in (its task, project, related goals and earlier decisions) in the background, and use it in suggestions. Other plugins can read it.",
+      default: true,
+    },
+    cardRuns: {
+      type: "number",
+      label: "Card runs at once",
+      description: "How many thread cards may be built at the same time (1 to 3).",
+      default: DEFAULT_CARD_RUNS,
+    },
   });
-  type SettingValues = { model?: unknown; effort?: unknown };
+  type SettingValues = { model?: unknown; effort?: unknown; card?: unknown; cardRuns?: unknown };
   const readChoice = (values: SettingValues): ModelChoice => ({
     model: typeof values.model === "string" && values.model.trim() !== "" ? values.model.trim() : DEFAULT_MODEL,
     effort: EFFORTS.find((effort) => effort === values.effort) ?? DEFAULT_EFFORT,
   });
-  let choice = readChoice(await settingsHandle.get());
+  const readCards = (values: SettingValues) => ({
+    enabled: values.card !== false,
+    runs: typeof values.cardRuns === "number" && Number.isFinite(values.cardRuns) ? values.cardRuns : DEFAULT_CARD_RUNS,
+  });
+  const initialSettings = await settingsHandle.get();
+  let choice = readChoice(initialSettings);
+  let cardSettings = readCards(initialSettings);
   settingsHandle.onChange((next) => {
     choice = readChoice(next as SettingValues);
+    cardSettings = readCards(next as SettingValues);
   });
 
   const startOrigins = createStartOriginStore(bb);
@@ -221,12 +286,29 @@ export default async function plugin(bb: BbPluginApi) {
   /** Set when the plugin is being reloaded or disabled: nothing new may start, and nothing may log or write. */
   let disposed = false;
 
-  /** Null when the plugin's database can't be opened: follow-ups still work, they just don't learn. */
+  /** Null when the plugin's database can't be opened: follow-ups still work, they just don't learn or log card runs. */
+  let db: ReturnType<typeof bb.storage.database> | null = null;
   let learning: Learning | null = null;
   try {
-    learning = openLearning(bb.storage.database(), (db, statements) => bb.storage.migrate(db, statements), () => randomUUID());
+    db = bb.storage.database();
+    bb.storage.migrate(db, MIGRATIONS);
+    learning = openLearning(db, () => randomUUID());
   } catch (error) {
+    db = null;
     bb.log.warn(`followups won't learn from what you pick: its database can't be opened: ${errorMessage(error)}`);
+  }
+  const cards = createCardService({ bb, db, context, settings: () => ({ ...cardSettings, choice }) });
+
+  /** The card as the suggestion and draft calls see it; none while cards are off or unreadable. */
+  async function cardTextFor(threadId: string): Promise<string | null> {
+    if (!cardSettings.enabled) return null;
+    try {
+      const card = await cards.read(threadId);
+      return card ? renderCard(card, Date.now()) : null;
+    } catch (error) {
+      bb.log.warn(`followups could not read the card of ${threadId}: ${errorMessage(error)}`);
+      return null;
+    }
   }
   /** Bookkeeping never breaks a suggestion or a draft. */
   function learn(what: string, record: (learning: Learning) => void): void {
@@ -365,6 +447,7 @@ export default async function plugin(bb: BbPluginApi) {
     try {
       const { newOwnerTurns } = await context.scan(threadId);
       for (const turn of newOwnerTurns) learn("what the owner sent", (from) => from.ownerSent(threadId, turn.text, turn.at));
+      if (newOwnerTurns.length > 0 && !disposed) cards.consider(threadId, "owner-turn");
     } catch (error) {
       if (!disposed) bb.log.warn(`followups could not read who wrote in ${threadId}: ${errorMessage(error)}`);
     }
@@ -712,7 +795,7 @@ export default async function plugin(bb: BbPluginApi) {
       await writeState(threadId, { status: "working", suggestions: [] }).catch(() => undefined);
       clock.lap("state");
 
-      const ctx = await context.read(threadId);
+      const [ctx, cardText] = await Promise.all([context.read(threadId), cardTextFor(threadId)]);
       clock.lap("context");
       if (cancel.isStale()) {
         await dropStale();
@@ -729,7 +812,7 @@ export default async function plugin(bb: BbPluginApi) {
       const { value, stats } = await callClaude(
         suggestCall({
           ctx,
-          cardText: null,
+          cardText,
           answer: lastAssistantText,
           hasOpenQuestions,
           examples: examplesFor(threadId, ctx.thread.projectId),
@@ -741,6 +824,10 @@ export default async function plugin(bb: BbPluginApi) {
       if (cancel.isStale()) {
         await dropStale();
         return;
+      }
+      if (value.cardStale && cardText !== null) {
+        bb.log.info(`followups: the card of ${threadId} looks stale (${value.staleReason ?? "no reason given"})`);
+        cards.consider(threadId, "stale");
       }
       const suggestions: FollowupSuggestion[] = pickThree(value.candidates, hasOpenQuestions).map((candidate) => ({
         id: randomUUID().slice(0, 8),
@@ -826,13 +913,13 @@ export default async function plugin(bb: BbPluginApi) {
     clock.lap("answer");
     if (cancel.isStale()) throw gone();
     try {
-      const ctx = await context.read(threadId);
+      const [ctx, cardText] = await Promise.all([context.read(threadId), cardTextFor(threadId)]);
       clock.lap("context");
       if (cancel.isStale()) throw gone(); // before a call is started for it
       const { value, stats } = await callClaude(
         draftCall({
           ctx,
-          cardText: null,
+          cardText,
           answer,
           hasOpenQuestions: openQuestions(answer),
           examples: examplesFor(threadId, ctx.thread.projectId),
@@ -935,6 +1022,7 @@ export default async function plugin(bb: BbPluginApi) {
       clearTimeout(settleTimers.get(thread.id));
       settleTimers.delete(thread.id);
       scannedThreads.delete(thread.id);
+      cards.forget(thread.id);
     });
   }
 
@@ -977,6 +1065,8 @@ export default async function plugin(bb: BbPluginApi) {
     "  bb followups regenerate <thread-id> [--json]",
     "  bb followups draft <thread-id> <suggestion-id> [--json]",
     "  bb followups stats [--days <n>] [--project <project-id>] [--json]",
+    "  bb followups card <thread-id> [--refresh] [--json]",
+    "  bb followups cards [--project <project-id>] [--day today|YYYY-MM-DD] [--json]",
   ].join("\n");
   bb.cli.register({
     name: "followups",
@@ -991,7 +1081,9 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "cleanup", summary: "Delete the hidden worker threads earlier releases left behind", usage: "bb followups cleanup [--dry-run] [--json]" },
       { name: "regenerate", summary: "Draft a thread's follow-ups again now, and show where the time went", usage: "bb followups regenerate <thread-id> [--json]" },
       { name: "draft", summary: "Run the draft step for a suggestion, and show where the time went", usage: "bb followups draft <thread-id> <suggestion-id> [--json]" },
-      { name: "stats", summary: "How often the owner sent a suggested follow-up, by kind", usage: "bb followups stats [--days <n>] [--project <project-id>] [--json]" },
+      { name: "stats", summary: "How often the owner sent a suggested follow-up, by kind, and what thread cards cost", usage: "bb followups stats [--days <n>] [--project <project-id>] [--json]" },
+      { name: "card", summary: "Show a thread's card, or build it now with --refresh", usage: "bb followups card <thread-id> [--refresh] [--json]" },
+      { name: "cards", summary: "List thread cards, newest first", usage: "bb followups cards [--project <project-id>] [--day today|YYYY-MM-DD] [--json]" },
     ],
     async run(argv) {
       const json = argv.includes("--json");
@@ -1127,7 +1219,28 @@ export default async function plugin(bb: BbPluginApi) {
           if (!options) break;
           if (!learning) return { exitCode: 1, stderr: "Follow-up statistics are unavailable: the plugin database can't be opened.\n" };
           const stats = learning.stats(options);
-          return reply(stats, describeStats(stats, options.projectId));
+          const cardRuns = cards.runSummary({ days: options.days });
+          return reply({ ...stats, cards: cardRuns }, `${describeStats(stats, options.projectId)}\n${describeCardRuns(cardRuns)}`);
+        }
+        case "card": {
+          const refresh = args.includes("--refresh");
+          const rest = args.filter((arg) => arg !== "--refresh");
+          const threadId = rest[0];
+          if (!threadId || rest.length !== 1) break;
+          if (refresh && !cardSettings.enabled) {
+            return { exitCode: 1, stderr: "Thread cards are turned off in the plugin settings (card).\n" };
+          }
+          const status = refresh ? await cards.refresh(threadId) : await cards.status(threadId);
+          return reply({ threadId, ...status }, describeCard(threadId, status));
+        }
+        case "cards": {
+          const filter = cardsFilter(args);
+          if (!filter) break;
+          const list = await cards.list(filter);
+          return reply(
+            list,
+            list.length === 0 ? "No thread cards." : list.map((card) => `${card.threadId}  ${card.day}  [${card.role}]  ${card.task}`).join("\n"),
+          );
         }
         case "cleanup": {
           if (args.some((arg) => arg !== "--dry-run")) break;
@@ -1146,6 +1259,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.onDispose(() => {
     disposed = true;
+    cards.dispose();
     for (const timer of settleTimers.values()) clearTimeout(timer);
     settleTimers.clear();
     // Calls in flight would otherwise carry on against a dead API handle once

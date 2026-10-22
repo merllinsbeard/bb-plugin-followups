@@ -1,54 +1,45 @@
 ---
 name: followups
-description: Inspect or clear the Followups plugin's suggested follow-up prompts with the `bb followups` CLI. Use when the user asks what follow-ups were suggested for a thread, or wants them cleared.
+description: Inspect the Followups plugin with the `bb followups` CLI - the follow-ups suggested for a thread, a thread's card (its task, project, related goals and earlier decisions), and how often suggestions were used. Use when the user asks what was suggested, wants them cleared, or when you need a thread's card.
 ---
 
 # Follow-ups
 
-The Followups plugin drafts short follow-up prompts when a visible thread
-finishes, and shows them as clickable buttons in a banner above that thread's
-composer. Clicking one expands it into a full draft in the composer — the
-plugin fills the draft, it never sends. Sending any message clears the banner.
+The Followups plugin suggests three follow-up prompts when a thread the user
+writes in finishes, and shows them as clickable tiles in a banner above that
+thread's composer. Clicking one expands it into a full draft in the composer;
+the plugin fills the draft, it never sends. Sending any message clears the
+banner. Threads only agents, crons or plugins write in get no follow-ups unless
+the user switched them on.
 
 Agents never need to write follow-ups by hand: the banner belongs to the user.
-These commands are for inspection and debugging only.
+These commands are for inspection, debugging, and reading thread cards.
 
 ## Commands
 
 | Command | Effect |
 | --- | --- |
-| `bb followups show <thread-id>` | Show the stored follow-ups for a thread, plus how long they took and how many tokens (cached and output) the drafting model used. |
+| `bb followups show <thread-id>` | The stored follow-ups with their kinds, plus how long they took and the tokens used; or why the thread gets none. |
 | `bb followups clear <thread-id>` | Clear the stored follow-ups for a thread. |
-| `bb followups on <thread-id>` / `off <thread-id>` | Turn follow-ups on or off for one thread (the user's button in the thread header does the same). Only on the user's request; `on` drafts right away for a finished thread, which spawns a worker. |
-| `bb followups model` | Show which model drafts follow-ups (saved pick or BB default). |
-| `bb followups cleanup --dry-run` | List the leftover hidden worker threads the plugin would delete. Workers are deleted automatically; run it without `--dry-run` only when the user asks. |
+| `bb followups on <thread-id>` / `off <thread-id>` | Turn follow-ups on or off for one thread (the user's button in the thread header does the same). Only on the user's request; `on` drafts right away for a finished thread, which makes a model call. |
+| `bb followups card <thread-id>` | The thread's card: what it is for, its project, the user's goals it moves, earlier decisions, today's focus fit, and missing sources. |
+| `bb followups cards [--project <id>] [--day today\|YYYY-MM-DD]` | Cards of many threads, newest first. |
+| `bb followups stats [--days <n>] [--project <id>]` | How often a suggestion became the user's message, by kind, and what card runs cost. |
+| `bb followups model` | The model and effort every call uses. |
+| `bb followups cleanup --dry-run` | List the hidden worker threads earlier releases left behind. Run it without `--dry-run` only when the user asks. |
 
-`bb followups regenerate` and `bb followups draft` each spawn a real model worker, so run them only when the user asks (for example to time the pipeline). `regenerate` only works on a thread that has finished, which includes having no child threads still running (a parent that is waiting on its children gets its follow-ups once they are done).
+`bb followups regenerate`, `bb followups draft` and `bb followups card --refresh`
+each make a real model call, so run them only when the user asks (for example
+to time the pipeline). `regenerate` only works on a thread that gets follow-ups
+and has finished, which includes having no child threads still running.
 
-The drafting model is the user's choice under Settings → Follow-ups model.
-Never change it on your own; point the user there if they ask.
+A card is context, not a source of facts about what was done: read it to learn
+what a thread is for, and check the thread itself before reporting progress.
+Other plugins read the card from thread metadata as described in `docs/CARD.md`
+in the plugin's source.
+
+The settings (`model`, `effort`, `card`, `cardRuns`) are the user's choice.
+Never change them on your own; point the user to Settings → Installed plugins →
+Followups if they ask.
 
 Add `--json` to any command when the output drives code.
-
-## Evaluate prompt changes in the source repository
-
-Run `npm run test:worker-prompts` for the focused instruction and plugin
-lifecycle checks. Run `npm run eval:followups -- --baseline HEAD` to prepare a
-comparison against the current working tree without model calls. Add `--live`
-only when the user requests a model evaluation. The default is Codex with
-`gpt-6-luna` and low reasoning. This eval does not change the plugin's saved model.
-
-Use `docs/EVALUATING_PROMPTS.md` in the source checkout for repeated comparisons,
-quality checks, paired output review, timing, token usage, and tool telemetry.
-Report missing telemetry as unknown and distinguish native Codex timing from
-the full BB worker path. A clean sample is not a provider-wide execution guarantee.
-
-## Historical Codex worker chats
-
-Old releases deleted BB worker records without archiving the provider chat.
-Those provider-only chats cannot be reached by `bb followups cleanup`. From the
-Followups source repository, preview them with
-`node scripts/archive-existing-codex-followups.mjs --dry-run --json`.
-`--apply` archives matched chats through Codex's API and never deletes them.
-Discovery checks the exact worker prompt, last user message, completed turn,
-and a five-minute minimum age. It skips chats the user continued afterwards.

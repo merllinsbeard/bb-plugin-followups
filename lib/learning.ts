@@ -73,7 +73,7 @@ export interface Learning {
   stats(filter: { readonly days: number; readonly projectId?: string }): AcceptanceStats;
 }
 
-/** Append-only (bb.storage.migrate): never edit or reorder a shipped statement. */
+/** Part of the plugin's one migration list (server.ts): never edit a shipped statement. */
 export const LEARNING_MIGRATIONS: string[] = [
   `CREATE TABLE batches (
      id TEXT PRIMARY KEY,
@@ -113,13 +113,8 @@ type Row = {
 
 const clip = (text: string, max: number) => (text.length <= max ? text : `${text.slice(0, max).trimEnd()}…`);
 
-export function openLearning(
-  db: Database.Database,
-  migrate: (db: Database.Database, statements: string[]) => void,
-  newId: () => string,
-  now: () => number = Date.now,
-): Learning {
-  migrate(db, LEARNING_MIGRATIONS);
+/** `db` must already have LEARNING_MIGRATIONS applied. */
+export function openLearning(db: Database.Database, newId: () => string, now: () => number = Date.now): Learning {
   const open = db.prepare<[string], Row>(
     `SELECT id, shown_at, shown_json, picked_id, draft, sent, outcome FROM batches
      WHERE thread_id = ? AND closed_at IS NULL ORDER BY shown_at DESC LIMIT 1`,

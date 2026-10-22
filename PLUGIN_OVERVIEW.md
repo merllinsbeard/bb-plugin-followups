@@ -2,66 +2,62 @@ Suggest clickable follow-up prompts above the composer when a thread finishes.
 
 ## What you get
 
-- A **Follow-ups** panel above a thread's message box, drafted by a model
-  from the thread's last finished answer: a grid of numbered suggestion tiles
-  under a header with a count (two columns when there's room, one when it's
-  narrow). It starts collapsed to just the header; click the header to show
-  the suggestions. That set stays expanded across thread switches and plugin
+- A **Follow-ups** panel above a thread's message box with three suggestions
+  drawn from the thread's last finished answer: a grid of numbered tiles under
+  a header with a count (two columns when there's room, one when it's narrow).
+  It starts collapsed to just the header; click the header to show the
+  suggestions. That set stays expanded across thread switches and plugin
   reloads until you collapse it; new suggestions start collapsed.
+- Suggestions in your voice, each of a kind (answer, continue, check, refocus,
+  delegate, close) with a short reason under the label. When the answer ends
+  with questions or numbered options, the first tile answers them all.
+- Only where you write: a thread gets follow-ups once you have written in it.
+  Threads only agents, crons or plugins write in stay quiet. The button in a
+  thread's header turns follow-ups on or off for it either way (a slash over
+  the icon means off).
+- A card per thread you write in, built in the background: its task, its
+  project, which of your goals it moves, and earlier decisions. Suggestions
+  read it, and so can other plugins.
+- It learns what you pick: your recent picks and what you actually sent go
+  into the next suggestions.
 - See what each run cost: a footer reads "Generated in 4.2s · 37,275 tokens"
   for the suggestions, with a second line for the draft once you've picked
-  one. Open Details for a table of the token split (new input, cached,
-  output, and reasoning when there is any) and the model that did the work.
-- Each suggestion says why it was suggested: a short reason under the label
-  ("The answer says the retry path is untested", "You offered to do this"),
-  which also goes into the draft so it picks the right specifics.
+  one. Open Details for the token split and the model.
 - Keyboard: the arrow keys move between tiles, 1–9 draft that tile, Esc
   returns to the composer.
 - Clicking a follow-up expands it into a full, ready-to-send draft in the
   composer. Nothing ever sends on your behalf, and your own words are safe:
   the draft goes into an empty composer, or is added below what you've
   already typed. Slow draft? Cancel it from the banner.
-- If a full draft can't be written, you get the short follow-up and a note
-  saying so, rather than a silent substitution.
-- Switch follow-ups on or off for any one thread with the button in its header
-  (a slash over the icon means off). The thread's own choice beats the
-  "Suggest follow-ups automatically" setting, which is just the default.
 - Follow-ups wait until a thread is really done: while its child threads are
   still working, the thread counts as running and shows none.
-- Sending any message clears the banner: follow-ups belong to the answer
-  they were drafted from. The ✕ dismisses it early, even while it's still
-  looking.
+- Sending any message clears the banner. The ✕ dismisses it early.
 - A `bb followups` command: `show` and `clear` a thread's follow-ups, switch
-  one thread `on` or `off`, check the `model`, and `cleanup` leftover workers.
+  one thread `on` or `off`, read a thread's `card` or many `cards`, see
+  `stats`, check the `model`.
 
 ## How it works
 
-When a visible thread goes idle, the server spawns a hidden worker thread on
-the follow-ups model, asks it for up to five short follow-up labels, and
-stores them in the thread's plugin metadata. The banner reads them over
-RPC and refreshes on a realtime signal. Clicking a label spawns another
-worker that writes the full first-person message with the conversation as
-context. Queued or dispatched messages and the thread going active again
-wipe the stored follow-ups, so the banner disappears.
-
-Choose the model under Settings → Follow-ups model: BB's native
-provider/model picker, saved per installation. With no saved choice,
-follow-ups use BB's primary default model.
+When a thread you write in goes idle, the server makes one `claude -p` call on
+your own Claude login, with no tools, for four candidate follow-ups, keeps the
+best three and stores them in the thread's plugin metadata. The banner reads
+them over RPC and refreshes on a realtime signal. Clicking one makes a second
+call that writes the full first-person message. On your first message of the
+day in a thread, a background run builds the thread's card: it may read the
+project's files and search your memory with `ov find`, nothing else.
 
 ## Cost and safety
 
 Nothing is ever sent for you, and a draft never overwrites what you typed.
-Each suggestion and each draft is a short run on your chosen model, so it
-spends tokens; at most four suggestion workers run at once, and the footer
-shows what each run cost. Workers are hidden threads, archived once their output
-is used or becomes stale (also at the provider when supported). The cleanup
-sweep deletes old workers, respecting the debug retention setting.
-They run in the least privileged permission mode their provider offers and are
-told to use no tools, but they are agent sessions in the thread's environment,
-not a sandbox.
+Each suggestion, draft and card is a run on your Claude login (Haiku 5.5 at
+max effort by default), so it uses your plan; at most four suggestion calls
+and two card runs go at once, and the footer and `bb followups stats` show
+what they cost. Suggestion and draft calls have no tools and run in an empty
+temporary directory. Card runs are read-only and confined to the thread's
+project directory and `ov find`.
 
 ## For agents
 
 Agents do not write follow-ups: the banner is the user's surface. The bundled
-skill tells an agent to leave it alone and only inspect it with
-`bb followups show` when asked.
+skill tells an agent to leave it alone, inspect it with `bb followups show`
+when asked, and read a thread's card with `bb followups card`.

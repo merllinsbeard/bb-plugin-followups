@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import Database from "better-sqlite3";
-import { openLearning, TEXTS_PER_SCOPE } from "../lib/learning.ts";
+import { LEARNING_MIGRATIONS, openLearning, TEXTS_PER_SCOPE } from "../lib/learning.ts";
 import plugin from "../server.ts";
 import { boot, DRAFT, until } from "./helpers.mjs";
 
@@ -133,8 +133,8 @@ test("what was learned survives a reload", async () => {
 function learningAt(clock) {
   const db = new Database(":memory:");
   let n = 0;
-  const migrate = (handle, statements) => statements.forEach((statement) => handle.exec(statement));
-  return { db, learning: openLearning(db, migrate, () => `b${++n}`, () => clock.now) };
+  for (const statement of LEARNING_MIGRATIONS) db.exec(statement);
+  return { db, learning: openLearning(db, () => `b${++n}`, () => clock.now) };
 }
 
 test("texts are kept only for the newest batches of each thread and project; counts stay", () => {

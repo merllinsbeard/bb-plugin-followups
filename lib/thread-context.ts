@@ -54,6 +54,7 @@ export interface ThreadFacts {
   readonly parentThreadId: string | null;
   readonly originPluginId: string | null;
   readonly sectionId: string | null;
+  readonly environmentId: string | null;
   readonly visibility: "visible" | "hidden";
 }
 
@@ -66,6 +67,7 @@ export function threadFacts(row: {
   parentThreadId: string | null;
   originPluginId: string | null;
   sectionId: string | null;
+  environmentId: string | null;
   visibility: string;
 }): ThreadFacts {
   return {
@@ -76,6 +78,7 @@ export function threadFacts(row: {
     parentThreadId: row.parentThreadId,
     originPluginId: row.originPluginId,
     sectionId: row.sectionId,
+    environmentId: row.environmentId,
     visibility: row.visibility === "hidden" ? "hidden" : "visible",
   };
 }

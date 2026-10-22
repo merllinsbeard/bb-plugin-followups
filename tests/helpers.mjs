@@ -83,20 +83,34 @@ export function flag(call, name) {
   return at === -1 ? undefined : call.argv[at + 1];
 }
 
+/** What the fake card run answers by default: the model's part of a card. */
+export const CARD_DRAFT = {
+  project: "Плагин подсказок для bb",
+  task: "Научить подсказки видеть карточку треда",
+  goals: ["Запустить умные подсказки — этот тред их делает (q1)"],
+  decisions: ["Подсказки идут через claude -p (AGENTS.md)"],
+  siblings: "",
+  focusFit: "не связан с фокусом дня",
+  gaps: [],
+};
+
 const defaultAnswers = () => ({
   suggest: { output: suggested() },
   draft: { output: { message: DRAFT } },
+  card: { output: CARD_DRAFT },
 });
 
 /**
  * A fake BB. `threads` maps id -> { status, parent, visibility, title, projectId, sectionId,
  * originPluginId, environmentId, answer, turns }. `turns` are the thread's turn requests,
- * `{ initiator, source, sender, text }`; by default one `user`/`spawn` turn that started it
+ * `{ initiator, source, sender, text, at }`; by default one `user`/`spawn` turn that started it
  * (an owner's for a root thread, an agent's spawn for a child). `claude` overrides the fake
  * claude's answers; `metadata` seeds stored plugin metadata (`{ [pluginId]: { [threadId]: … } }`
- * or, for this plugin, `{ [threadId]: … }`).
+ * or, for this plugin, `{ [threadId]: … }`). `environments` maps environment id -> path.
+ * Thread cards are off unless a test turns them on (`settings: { card: true }`), so only the
+ * card tests start card runs.
  */
-export async function boot({ threads = { t1: {} }, settings = {}, claude = {}, metadata = {}, now = Date.now() } = {}) {
+export async function boot({ threads = { t1: {} }, settings = {}, claude = {}, metadata = {}, environments = {}, now = Date.now() } = {}) {
   const fake = await fakeClaude({ ...defaultAnswers(), ...claude });
   const world = {
     threads: {},
@@ -112,6 +126,7 @@ export async function boot({ threads = { t1: {} }, settings = {}, claude = {}, m
     eventsFails: false,
     metadataWrites: 0,
     metadataFails: false,
+    environments: { ...environments },
   };
   for (const [key, value] of Object.entries(metadata)) {
     if (key === "followups" || key.startsWith("plugin:")) world.metadata[key.replace(/^plugin:/, "")] = structuredClone(value);
@@ -170,7 +185,7 @@ export async function boot({ threads = { t1: {} }, settings = {}, claude = {}, m
 
   const host = createFakePluginHost({
     pluginId: "followups",
-    settings,
+    settings: { card: false, ...settings },
     agentSkillIds: ["followups"],
     sdk: {
       threads: {
@@ -186,10 +201,11 @@ export async function boot({ threads = { t1: {} }, settings = {}, claude = {}, m
           world.metadata[pluginId][threadId] = next;
           return {};
         },
-        experimental_listPluginMetadata: async ({ pluginId, threadIds }) =>
-          threadIds
+        experimental_listPluginMetadata: async ({ pluginId, threadIds }) => ({
+          threads: threadIds
             .filter((id) => Object.keys(metaOf(pluginId, id)).length > 0)
             .map((id) => ({ threadId: id, metadata: structuredClone(metaOf(pluginId, id)) })),
+        }),
         get: async ({ threadId }) => {
           world.getCalls.push(threadId);
           if (!world.threads[threadId]) throw new Error(`no such thread ${threadId}`);
@@ -248,6 +264,9 @@ export async function boot({ threads = { t1: {} }, settings = {}, claude = {}, m
         },
         stop: async () => ({}),
       },
+      environments: {
+        get: async ({ environmentId }) => ({ id: environmentId, path: world.environments[environmentId] ?? null }),
+      },
     },
   });
   await plugin(host.bb);
@@ -277,7 +296,7 @@ export async function boot({ threads = { t1: {} }, settings = {}, claude = {}, m
     },
     /** The owner sends `text` to a thread: a user turn is requested and the thread starts working. */
     say: (id, text) => {
-      addTurn(id, { text });
+      addTurn(id, { text, at: Date.now() });
       world.threads[id].status = "active";
       return emit("thread.active", { thread: row(id) });
     },
