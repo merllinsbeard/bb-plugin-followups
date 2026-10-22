@@ -815,7 +815,8 @@ function ModelSettingsSection(_props: PluginSettingsSectionProps) {
       const nextSelection: ModelSelection = {
         providerId: next.providerId,
         model: next.model,
-        reasoningLevel: next.reasoningLevel,
+        // The server's rpc input schema rejects a level outside BB's set.
+        reasoningLevel: next.reasoningLevel as ModelSelection["reasoningLevel"],
         ...(serviceTier ? { serviceTier } : {}),
       };
       setSelection(nextSelection);

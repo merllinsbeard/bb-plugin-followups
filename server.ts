@@ -70,6 +70,15 @@ const modelSelectionSchema = z
   .strict();
 export type ModelSelection = z.infer<typeof modelSelectionSchema>;
 
+/** SDK 0.6.65 types reasoning levels as plain strings; anything outside BB's set falls back. */
+function reasoningLevelOr(
+  value: string,
+  fallback: ModelSelection["reasoningLevel"],
+): ModelSelection["reasoningLevel"] {
+  const parsed = modelSelectionSchema.shape.reasoningLevel.safeParse(value);
+  return parsed.success ? parsed.data : fallback;
+}
+
 function parseStoredModelSelection(value: unknown): ModelSelection | undefined {
   const parsed = modelSelectionSchema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
@@ -723,7 +732,7 @@ export default async function plugin(bb: BbPluginApi) {
     return {
       providerId,
       model: model.model,
-      reasoningLevel: model.defaultReasoningEffort,
+      reasoningLevel: reasoningLevelOr(model.defaultReasoningEffort, "medium"),
     };
   }
 
@@ -753,7 +762,9 @@ export default async function plugin(bb: BbPluginApi) {
     wanted: ModelSelection["reasoningLevel"],
   ): ModelSelection["reasoningLevel"] {
     const supported = modelInfo.supportedReasoningEfforts.map((effort) => effort.reasoningEffort);
-    return supported.length === 0 || supported.includes(wanted) ? wanted : modelInfo.defaultReasoningEffort;
+    return supported.length === 0 || supported.includes(wanted)
+      ? wanted
+      : reasoningLevelOr(modelInfo.defaultReasoningEffort, wanted);
   }
 
   /**
