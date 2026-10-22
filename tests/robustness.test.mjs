@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { makePluginAgentConfigurationContext } from "@get-bb/plugin-sdk/testing";
-import { alive, boot, sleep, until } from "./helpers.mjs";
+import { alive, boot, sleep, suggested, until } from "./helpers.mjs";
 
 // t1's turns already read (its start turn is seq 1), so only what a test does writes.
 const SCANNED = { turns: { scannedSeq: 1, lastOwnerSeq: 1, lastOwnerAt: 0 } };
@@ -79,7 +79,7 @@ test("a reload kills a message draft in flight too, and says nothing afterwards"
 
 test("a call that hasn't started when the plugin reloads never starts", async () => {
   const w = await boot();
-  w.claude.answer({ suggest: { output: { candidates: [] }, gate: w.claude.gate("held") } });
+  w.claude.answer({ suggest: { output: suggested(), gate: w.claude.gate("held") } });
   for (const id of ["a", "b", "c", "d", "e"]) w.addThread(id);
   for (const id of ["a", "b", "c", "d", "e"]) await w.idle(id);
   await until(() => w.claude.calls("suggest").length === 4);

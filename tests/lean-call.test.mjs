@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import test from "node:test";
-import { alive, boot, DRAFT, flag, sleep, until } from "./helpers.mjs";
+import { alive, boot, DRAFT, flag, sleep, suggested, until } from "./helpers.mjs";
 
 test("a finished thread gets its suggestions from one lean claude call on the configured model", async () => {
   const w = await boot({ settings: { model: "claude-test-1", effort: "high" } });
@@ -102,8 +102,8 @@ test("clicking a suggestion drafts the message through the same lean call", asyn
   assert.equal(result.stats.model, "claude-code/claude-haiku-5-5@max");
   const [call] = w.claude.calls("draft");
   assert.equal(flag(call, "--tools"), "");
-  assert.match(call.stdin, /# The follow-up the user picked\nAdd a test for the empty queue/);
-  assert.match(call.stdin, /Why it was suggested: The answer says the empty queue is untested/);
+  assert.match(call.stdin, /<picked kind="check">Add a test for the empty queue<\/picked>/);
+  assert.match(call.stdin, /<why>The answer says the empty queue is untested<\/why>/);
   assert.equal(w.world.spawned, 0);
   await w.dispose();
 });
@@ -152,7 +152,7 @@ test("changing the model setting applies to the next call", async () => {
 
 test("a reload kills the calls in flight and writes nothing afterwards", async () => {
   const w = await boot();
-  w.claude.answer({ suggest: { output: { candidates: [] }, gate: w.claude.gate("late") } });
+  w.claude.answer({ suggest: { output: suggested(), gate: w.claude.gate("late") } });
   await w.idle();
   await until(() => w.claude.calls("suggest").length === 1);
   const { pid } = w.claude.calls("suggest")[0];

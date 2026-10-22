@@ -2,7 +2,7 @@
 // default for threads that haven't made one. Run with `npm test`.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boot, sleep, until } from "./helpers.mjs";
+import { boot, sleep, suggested, until } from "./helpers.mjs";
 
 const calls = (w) => w.claude.calls("suggest").length;
 
@@ -162,8 +162,8 @@ test("`bb followups regenerate` while a call is running waits for its own run, a
   const w = await boot();
   w.claude.answer({
     suggest: [
-      { output: { candidates: [{ label: "Old", why: "Old answer" }] }, gate: w.claude.gate("first") },
-      { output: { candidates: [{ label: "Add a test", why: "The fix shipped untested" }] } },
+      { output: suggested("Old"), gate: w.claude.gate("first") },
+      { output: suggested("Add a test") },
     ],
   });
   await w.idle();
@@ -174,7 +174,7 @@ test("`bb followups regenerate` while a call is running waits for its own run, a
   const { exitCode, stdout } = await result;
   assert.equal(done, true);
   assert.equal(exitCode, 0);
-  assert.match(stdout, /1 suggestion\(s\), 1 with a reason \(ready\)/);
+  assert.match(stdout, /3 suggestion\(s\), 3 with a reason \(ready\)/);
   assert.match(stdout, /^Took \d+ms/m);
   assert.match(stdout, /Add a test/);
   await w.dispose();

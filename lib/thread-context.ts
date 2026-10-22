@@ -61,6 +61,7 @@ export function threadFacts(row: {
   id: string;
   projectId: string;
   title: string | null;
+  titleFallback?: string | null;
   status: string;
   parentThreadId: string | null;
   originPluginId: string | null;
@@ -70,7 +71,7 @@ export function threadFacts(row: {
   return {
     id: row.id,
     projectId: row.projectId,
-    title: row.title ?? "",
+    title: row.title ?? row.titleFallback ?? "",
     status: row.status,
     parentThreadId: row.parentThreadId,
     originPluginId: row.originPluginId,
@@ -125,6 +126,71 @@ export function wantsFollowups(override: Override, ledger: TurnLedger | null): b
   return ledger?.lastOwnerSeq != null;
 }
 
+export type ThreadRole = "orchestrator" | "worker" | "root";
+
+/** The orchestrator title convention ("Оркестратор · <project>"), then parentage. */
+export function threadRole(thread: Pick<ThreadFacts, "title" | "parentThreadId">): ThreadRole {
+  if (/^Оркестратор\s*·/.test(thread.title)) return "orchestrator";
+  return thread.parentThreadId !== null ? "worker" : "root";
+}
+
+export interface BangkokNow {
+  readonly ms: number;
+  /** YYYY-MM-DD in Asia/Bangkok. */
+  readonly day: string;
+  /** "14:05" */
+  readonly time: string;
+  /** "среда" */
+  readonly weekday: string;
+}
+
+const bangkokParts = new Intl.DateTimeFormat("ru-RU", {
+  timeZone: "Asia/Bangkok",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+  weekday: "long",
+});
+
+/** The owner's clock: he lives in Asia/Bangkok. */
+export function bangkokNow(ms: number): BangkokNow {
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    bangkokParts.formatToParts(ms).find((item) => item.type === type)?.value ?? "";
+  return {
+    ms,
+    day: `${part("year")}-${part("month")}-${part("day")}`,
+    time: `${part("hour")}:${part("minute")}`,
+    weekday: part("weekday"),
+  };
+}
+
+export interface SiblingLine {
+  readonly threadId: string;
+  readonly title: string;
+  readonly status: string;
+  readonly minutesAgo: number;
+  readonly relation: "parent" | "child" | "sibling";
+}
+
+/** What both calls get about one thread. */
+export interface ThreadContext {
+  readonly thread: ThreadFacts;
+  readonly role: ThreadRole;
+  readonly now: BangkokNow;
+  readonly ledger: TurnLedger;
+  /** The thread's first request, whoever wrote it: it defines the task. Clipped. */
+  readonly firstPrompt: string | null;
+  /** The owner's last few prompts, oldest first, clipped. Agent tells never count as his voice. */
+  readonly ownerPrompts: readonly string[];
+  /** The newest request of any author, unclipped: bb reports it as the "answer" when no reply came. */
+  readonly latestRequest: string | null;
+  /** Parent, children, then threads active in the last day beside it; newest first within each. */
+  readonly siblings: readonly SiblingLine[];
+}
+
 export interface ScanResult {
   readonly ledger: TurnLedger;
   /** Owner turns this scan saw for the first time, oldest first. */
@@ -139,9 +205,25 @@ export interface ThreadContextReader {
    * scan after it, so a turn requested meanwhile is never missed.
    */
   scan(threadId: string): Promise<ScanResult>;
+  /** Everything the calls are shown. Parts that can't be read are left out and logged. */
+  read(threadId: string): Promise<ThreadContext>;
 }
 
 const seqOf = z.object({ seq: z.number() });
+
+/** The latest prompt gets room (the answer responds to it); earlier ones are background. */
+const OWNER_PROMPTS = 3;
+const LATEST_PROMPT_CHARS = 1_500;
+const EARLIER_PROMPT_CHARS = 400;
+const FIRST_PROMPT_CHARS = 2_500;
+/** Turn requests read for the owner's prompts: enough to reach past a run of agent reports. */
+const RECENT_TURNS = 40;
+const SIBLINGS = 8;
+const SIBLING_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function clipEnd(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max).trimEnd()} […]`;
+}
 const PAGE = 100;
 /** A long history is read over several scans; each continues where the last stopped. */
 const PAGES_PER_SCAN = 20;
@@ -206,5 +288,81 @@ export function createThreadContextReader(bb: BbPluginApi, startOrigins: StartOr
     return next;
   }
 
-  return { facts, scan };
+  /** A failed part of the context means less context, never no follow-ups. */
+  async function orEmpty<T>(what: string, threadId: string, read: Promise<T>, empty: T): Promise<T> {
+    try {
+      return await read;
+    } catch (error) {
+      bb.log.warn(`followups could not read ${what} of ${threadId}: ${error instanceof Error ? error.message : String(error)}`);
+      return empty;
+    }
+  }
+
+  async function siblingsOf(thread: ThreadFacts, now: number): Promise<SiblingLine[]> {
+    type Row = { id: string; title: string | null; titleFallback?: string | null; status: string; updatedAt: number };
+    const [parent, children, around] = await Promise.all([
+      thread.parentThreadId === null ? null : bb.sdk.threads.get({ threadId: thread.parentThreadId }).catch(() => null),
+      bb.sdk.threads.list({ parentThreadId: thread.id, includeHidden: true, limit: 20 }),
+      // A section groups related work; Personal holds unrelated threads, so the project is the fallback only.
+      bb.sdk.threads.list(thread.sectionId !== null ? { sectionId: thread.sectionId, limit: 30 } : { projectId: thread.projectId, limit: 30 }),
+    ]);
+    const newest = (rows: Row[]) => [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
+    const line = (row: Row, relation: SiblingLine["relation"]): SiblingLine => ({
+      threadId: row.id,
+      title: row.title ?? row.titleFallback ?? "",
+      status: row.status,
+      minutesAgo: Math.max(0, Math.round((now - row.updatedAt) / 60_000)),
+      relation,
+    });
+    // This plugin's own leftover helper threads are not anyone's work.
+    const kids = newest(children.filter((row) => row.originPluginId !== bb.pluginId));
+    const near = new Set([thread.id, thread.parentThreadId, ...kids.map((row) => row.id)]);
+    const others = newest(around.filter((row) => !near.has(row.id) && now - row.updatedAt <= SIBLING_WINDOW_MS));
+    return [
+      ...(parent ? [line(parent, "parent")] : []),
+      ...kids.map((row) => line(row, "child")),
+      ...others.map((row) => line(row, "sibling")),
+    ].slice(0, SIBLINGS);
+  }
+
+  async function read(threadId: string): Promise<ThreadContext> {
+    const now = Date.now();
+    const [meta, thread] = await Promise.all([bb.sdk.threads.getPluginMetadata({ threadId }), facts(threadId)]);
+    const record = (meta ?? {}) as Record<string, unknown>;
+    const stored = ledgerSchema.safeParse(record[META_TURNS]);
+    const startOrigin = startOrigins.originOf(threadId, record[META_START_ORIGIN]);
+    const types = ["client/turn/requested"] as const;
+    const [recent, first, siblings] = await Promise.all([
+      orEmpty("the recent turns", threadId, bb.sdk.threads.events.list({ threadId, types, order: "desc", limit: String(RECENT_TURNS) }), []),
+      orEmpty("the first turn", threadId, bb.sdk.threads.events.list({ threadId, types, order: "asc", limit: "1" }), []),
+      orEmpty("the threads around", threadId, siblingsOf(thread, now), []),
+    ]);
+    const turns = recent.map(turnRequestFromEvent).filter((turn): turn is TurnRequest => turn !== null);
+    const owner = turns
+      .filter((turn) => turnAuthor(turn, thread, startOrigin) === "owner" && turn.text.trim() !== "")
+      .slice(0, OWNER_PROMPTS)
+      .reverse();
+    const firstTurn = first.map(turnRequestFromEvent)[0] ?? null;
+    return {
+      thread,
+      role: threadRole(thread),
+      now: bangkokNow(now),
+      ledger: stored.success ? stored.data : EMPTY_LEDGER,
+      firstPrompt: firstTurn && firstTurn.text.trim() !== "" ? clipEnd(firstTurn.text.trim(), FIRST_PROMPT_CHARS) : null,
+      ownerPrompts: owner.map((turn, index, all) =>
+        clipMiddleKeepEnd(turn.text.trim(), index === all.length - 1 ? LATEST_PROMPT_CHARS : EARLIER_PROMPT_CHARS),
+      ),
+      latestRequest: turns[0]?.text.trim() || null,
+      siblings,
+    };
+  }
+
+  return { facts, scan, read };
+}
+
+/** As suggest.ts clips an answer: the start for context, the end kept whole. */
+function clipMiddleKeepEnd(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const head = Math.floor(max / 4);
+  return `${text.slice(0, head).trimEnd()}\n[…]\n${text.slice(text.length - (max - head)).trimStart()}`;
 }

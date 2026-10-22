@@ -42,6 +42,16 @@ export const CANDIDATES = [
 export const DRAFT = "Please add a test for the empty queue case.";
 
 /**
+ * A valid suggestion answer: these labels first (strings, or `{ label, why, kind }`), filled up
+ * to the four candidates the schema requires from CANDIDATES.
+ */
+export function suggested(...firsts) {
+  const own = firsts.map((item) => ({ kind: "continue", why: `Because of ${typeof item === "string" ? item : item.label}`, ...(typeof item === "string" ? { label: item } : item) }));
+  const rest = CANDIDATES.filter((candidate) => !own.some((item) => item.label === candidate.label));
+  return { candidates: [...own, ...rest].slice(0, 4), cardStale: false };
+}
+
+/**
  * Put the fake `claude` first on PATH with a fresh directory for its call log and answers.
  * `answer(fixtures)` replaces what it answers (see tests/fake-claude/claude); `calls(kind)`
  * reads what it was sent; `open(name)` releases the calls gated on `gate(name)`.
@@ -74,7 +84,7 @@ export function flag(call, name) {
 }
 
 const defaultAnswers = () => ({
-  suggest: { output: { candidates: CANDIDATES.slice(0, 3).map(({ label, why }) => ({ label, why })) } },
+  suggest: { output: suggested() },
   draft: { output: { message: DRAFT } },
 });
 

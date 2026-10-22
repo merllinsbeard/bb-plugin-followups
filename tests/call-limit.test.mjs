@@ -4,11 +4,11 @@
 // The message draft for a clicked follow-up is never held up. Run with `npm test`.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { alive, boot, sleep, until } from "./helpers.mjs";
+import { alive, boot, sleep, suggested, until } from "./helpers.mjs";
 
 const MAX = 4; // MAX_CONCURRENT_DRAFTS in server.ts
 const IDS = ["t1", "t2", "t3", "t4", "t5", "t6"];
-const ANSWER = { candidates: [{ label: "Add a test", why: "The fix shipped untested" }] };
+const ANSWER = suggested("Add a test");
 
 /** Threads t1..t6 (and t8), where the nth suggestion call to start waits for `open("n")`. */
 async function full({ failFirst = 0 } = {}) {

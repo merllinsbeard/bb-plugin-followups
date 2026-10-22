@@ -4,15 +4,15 @@
 // the user clicked. Run with `npm test`.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { alive, boot, DRAFT, sleep, until } from "./helpers.mjs";
+import { alive, boot, DRAFT, sleep, suggested, until } from "./helpers.mjs";
 
-const HELD = (gate) => ({ output: { candidates: [{ label: "An outdated idea", why: "From the previous answer" }] }, gate });
+const HELD = (gate) => ({ output: suggested("An outdated idea"), gate });
 
 /** A world whose first suggestion call waits for `open("first")`; later ones answer at once. */
 async function held(options = {}) {
   const w = await boot(options);
   w.claude.answer({
-    suggest: [HELD(w.claude.gate("first")), { output: { candidates: [{ label: "Add a test", why: "The fix shipped untested" }] } }],
+    suggest: [HELD(w.claude.gate("first")), { output: suggested("Add a test") }],
     draft: { output: { message: DRAFT }, gate: w.claude.gate("draft") },
   });
   return w;
@@ -55,7 +55,9 @@ test("the next run does not wait for the old call, and only the new answer is sh
   await w.untilReady();
   w.claude.open("first");
   await sleep(300);
-  assert.deepEqual((await w.shown()).suggestions.map((s) => s.label), ["Add a test"]);
+  const labels = (await w.shown()).suggestions.map((s) => s.label);
+  assert.equal(labels[0], "Add a test");
+  assert.ok(!labels.includes("An outdated idea"), JSON.stringify(labels));
   await w.dispose();
 });
 
@@ -102,11 +104,11 @@ for (const [name, trigger] of [
 }
 
 test("a call nobody has moved on from is left to finish", async () => {
-  const w = await boot({ claude: { suggest: { output: { candidates: [{ label: "Add a test", why: "The fix shipped untested" }] }, delayMs: 250 } } });
+  const w = await boot({ claude: { suggest: { output: suggested("Add a test"), delayMs: 250 } } });
   await w.idle();
   await w.untilReady();
   assert.ok(!w.logs().some((m) => /stopped the call/.test(m)), JSON.stringify(w.logs()));
-  assert.deepEqual((await w.shown()).suggestions.map((s) => s.label), ["Add a test"]);
+  assert.equal((await w.shown()).suggestions[0].label, "Add a test");
   await w.dispose();
 });
 

@@ -3,7 +3,7 @@
 // Run with `npm test`.
 import assert from "node:assert/strict";
 import test, { mock } from "node:test";
-import { boot, sleep, until } from "./helpers.mjs";
+import { boot, sleep, suggested, until } from "./helpers.mjs";
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -166,7 +166,7 @@ test("a thread that was never waiting is left alone when a child finishes", asyn
 
 test("a child that starts working while the answer is being drafted keeps the follow-ups back", async () => {
   const w = await crew(captainWith(["kid", "idle"]));
-  w.claude.answer({ suggest: [{ output: { candidates: [{ label: "Add a test", why: "Untested" }] }, gate: w.claude.gate("first") }, { output: { candidates: [{ label: "Add a test", why: "Untested" }] } }] });
+  w.claude.answer({ suggest: [{ output: suggested("Add a test"), gate: w.claude.gate("first") }, { output: suggested("Add a test") }] });
   await w.idle("captain");
   await until(() => w.calls() === 1);
   w.world.threads.kid.status = "active";
