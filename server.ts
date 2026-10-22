@@ -1,8 +1,9 @@
 // bb-plugin-followups — suggest what to do after a thread finishes.
 //
-// When a visible thread goes idle, the server asks the local `claude` CLI, with
-// no tools and no project context, for short follow-up prompts drawn from the
-// finished answer. The banner above the thread composer (app.tsx) shows them as
+// When a visible thread the owner has written in goes idle, the server asks the
+// local `claude` CLI, with no tools and no project context, for short follow-up
+// prompts drawn from the finished answer. Threads only agents have written in
+// get none unless switched on. The banner above the thread composer (app.tsx) shows them as
 // clickable buttons. Clicking one asks for the full, ready-to-send composer
 // draft — the plugin fills the composer, it never sends for you. Sending any
 // message first clears the banner instead.
@@ -11,6 +12,15 @@ import { randomUUID } from "node:crypto";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { callClaude, EFFORTS, type CallStats, type Effort, type ModelChoice } from "./lib/claude.ts";
+import { createStartOriginStore } from "./lib/start-origin.ts";
+import {
+  createThreadContextReader,
+  ledgerSchema,
+  META_TURNS,
+  wantsFollowups,
+  type Override,
+  type TurnLedger,
+} from "./lib/thread-context.ts";
 
 const suggestionSchema = z.object({
   id: z.string(),
@@ -45,7 +55,7 @@ export const rpcContract = defineRpcContract({
         updatedAt: z.number(),
         /** Cost of the run that produced `suggestions`; null while none is known. */
         stats: statsSchema.nullable(),
-        /** Whether follow-ups are on for this thread: its own choice, else the setting. */
+        /** Whether follow-ups are on for this thread: its own choice, else whether the owner has written in it. */
         enabled: z.boolean(),
       })
       .strict(),
@@ -74,7 +84,7 @@ const META_SUGGESTIONS = "suggestions";
 const META_STATUS = "status";
 const META_UPDATED_AT = "updatedAt";
 const META_STATS = "stats";
-/** "on" or "off": this thread's own choice. Absent means it follows the setting. */
+/** "on" or "off": this thread's own choice. Absent means the owner rule decides. */
 const META_OVERRIDE = "override";
 
 const DEFAULT_MODEL = "claude-haiku-5-5";
@@ -238,13 +248,6 @@ export default async function plugin(bb: BbPluginApi) {
   bb.log.info("loaded");
 
   const settingsHandle = bb.settings.define({
-    enabled: {
-      type: "boolean",
-      label: "Suggest follow-ups automatically",
-      description:
-        "Draft follow-up prompts above the composer when a thread finishes. This is the default for every thread; each thread can switch itself on or off with the button in its header. Manual dismiss keeps working when this is off.",
-      default: true,
-    },
     model: {
       type: "string",
       label: "Model",
@@ -259,18 +262,25 @@ export default async function plugin(bb: BbPluginApi) {
       default: DEFAULT_EFFORT,
     },
   });
-  type SettingValues = { enabled?: unknown; model?: unknown; effort?: unknown };
+  type SettingValues = { model?: unknown; effort?: unknown };
   const readChoice = (values: SettingValues): ModelChoice => ({
     model: typeof values.model === "string" && values.model.trim() !== "" ? values.model.trim() : DEFAULT_MODEL,
     effort: EFFORTS.find((effort) => effort === values.effort) ?? DEFAULT_EFFORT,
   });
-  const initialSettings = await settingsHandle.get();
-  let enabled = initialSettings.enabled ?? true;
-  let choice = readChoice(initialSettings);
+  let choice = readChoice(await settingsHandle.get());
   settingsHandle.onChange((next) => {
-    enabled = (next as SettingValues).enabled !== false;
     choice = readChoice(next as SettingValues);
   });
+
+  const startOrigins = createStartOriginStore(bb);
+  const context = createThreadContextReader(bb, startOrigins);
+  // Records how each thread was started (see lib/start-origin.ts). Guarded so a host without
+  // hooks loads as before; such a host judges start turns by parent and plugin origin only.
+  try {
+    bb.experimental_hooks.on("message.dispatch", startOrigins.observe);
+  } catch (error) {
+    bb.log.warn(`followups cannot see how threads are started: ${errorMessage(error)}`);
+  }
 
   /** Set when the plugin is being reloaded or disabled: nothing new may start, and nothing may log or write. */
   let disposed = false;
@@ -332,18 +342,26 @@ export default async function plugin(bb: BbPluginApi) {
     bb.realtime.publish(FOLLOWUPS_CHANGED, { threadId });
   }
 
-  async function readState(threadId: string): Promise<{
+  type BannerState = {
     status: "empty" | "working" | "ready";
     suggestions: FollowupSuggestion[];
     updatedAt: number;
     stats: FollowupStats | null;
     enabled: boolean;
-  }> {
+  };
+
+  /** The banner's state, plus what decided `enabled`: the thread's own switch and its turn ledger (null until scanned). */
+  async function readState(threadId: string): Promise<BannerState & { override: Override; ledger: TurnLedger | null }> {
     const meta = await bb.sdk.threads.getPluginMetadata({ threadId });
-    // The thread's own choice is read apart from the rest, so stored follow-ups
-    // that can't be read never turn a thread the user switched off back on.
-    const override = z.enum(["on", "off"]).safeParse((meta as Record<string, unknown> | null)?.[META_OVERRIDE]);
-    const threadEnabled = override.success ? override.data === "on" : enabled;
+    // The thread's own choice and its ledger are read apart from the rest, so stored
+    // follow-ups that can't be read never turn a thread the user switched off back on.
+    const record = (meta ?? {}) as Record<string, unknown>;
+    const stored = z.enum(["on", "off"]).safeParse(record[META_OVERRIDE]);
+    const override: Override = stored.success ? stored.data : null;
+    const turns = ledgerSchema.safeParse(record[META_TURNS]);
+    const ledger = turns.success ? turns.data : null;
+    const threadEnabled = wantsFollowups(override, ledger);
+    const decided = { override, ledger };
     const parsed = z
       .object({
         [META_SUGGESTIONS]: z.array(suggestionSchema).optional(),
@@ -352,11 +370,11 @@ export default async function plugin(bb: BbPluginApi) {
         [META_STATS]: statsSchema.nullable().optional(),
       })
       .safeParse(meta);
-    if (!parsed.success) return { status: "empty", suggestions: [], updatedAt: 0, stats: null, enabled: threadEnabled };
+    if (!parsed.success) return { status: "empty", suggestions: [], updatedAt: 0, stats: null, enabled: threadEnabled, ...decided };
     const updatedAt = parsed.data[META_UPDATED_AT] ?? 0;
     const status = parsed.data[META_STATUS] ?? "empty";
     if (status === "working" && Date.now() - updatedAt > WORKING_STALE_MS) {
-      return { status: "empty", suggestions: [], updatedAt, stats: null, enabled: threadEnabled };
+      return { status: "empty", suggestions: [], updatedAt, stats: null, enabled: threadEnabled, ...decided };
     }
     return {
       status,
@@ -364,14 +382,46 @@ export default async function plugin(bb: BbPluginApi) {
       updatedAt,
       stats: parsed.data[META_STATS] ?? null,
       enabled: threadEnabled,
+      ...decided,
     };
   }
 
+  function bannerState(state: BannerState): BannerState {
+    const { status, suggestions, updatedAt, stats, enabled } = state;
+    return { status, suggestions, updatedAt, stats, enabled };
+  }
+
+  /** Why a thread gets no follow-ups, for the commands that refuse or report it. */
+  function offReason(state: { override: Override; ledger: TurnLedger | null }): string {
+    if (state.override === "off") return "turned off";
+    return state.ledger === null ? "off until its turns can be read" : "off because only agents have written in it";
+  }
+
+  /** Read the thread's new turns into its ledger. A failed read leaves the stored ledger to decide. */
+  async function scanTurns(threadId: string): Promise<void> {
+    try {
+      await context.scan(threadId);
+    } catch (error) {
+      if (!disposed) bb.log.warn(`followups could not read who wrote in ${threadId}: ${errorMessage(error)}`);
+    }
+  }
+
+  /** Threads scanned since this process started; the first look at any other one scans it first. */
+  const scannedThreads = new Set<string>();
+  async function scanOnFirstLook(threadId: string): Promise<void> {
+    if (scannedThreads.has(threadId)) return;
+    scannedThreads.add(threadId);
+    await scanTurns(threadId);
+  }
+
   /**
-   * Whether to draft for this thread. If its choice can't be read, don't: a
-   * call costs real tokens, and the thread may be one the user switched off.
+   * Whether to draft for this thread, after reading its newest turns. If its
+   * choice can't be read, don't: a call costs real tokens, and the thread may be
+   * one the user switched off or only agents use.
    */
-  async function wantsFollowups(threadId: string): Promise<boolean> {
+  async function followupsWanted(threadId: string): Promise<boolean> {
+    scannedThreads.add(threadId);
+    await scanTurns(threadId);
     try {
       return (await readState(threadId)).enabled;
     } catch (error) {
@@ -667,8 +717,8 @@ export default async function plugin(bb: BbPluginApi) {
     try {
       const thread = await bb.sdk.threads.get({ threadId });
       if (thread.visibility === "hidden") return;
-      // The thread's own choice, else the setting.
-      if (!(await wantsFollowups(threadId))) return;
+      // The thread's own choice, else whether the owner has written in it.
+      if (!(await followupsWanted(threadId))) return;
       // Follow-ups are for a finished answer. A thread that is running again has
       // nothing to suggest yet, and nothing would clear them: BB only signals
       // "became active" on the idle → active transition.
@@ -925,6 +975,9 @@ export default async function plugin(bb: BbPluginApi) {
     if (thread.visibility === "hidden") return;
     waitingOnChildren.delete(thread.id); // working again: its next idle event decides
     void clearFollowups(thread.id, "thread active").catch(() => undefined);
+    // The turn that woke it is already requested: learn who wrote it.
+    scannedThreads.add(thread.id);
+    void scanTurns(thread.id);
   });
   // A child (or deeper) stopped working: a parent that was waiting on its children may be able to draft now.
   for (const event of ["thread.idle", "thread.failed", "thread.archived", "thread.deleted"] as const) {
@@ -945,6 +998,7 @@ export default async function plugin(bb: BbPluginApi) {
       waitingOnChildren.delete(thread.id);
       clearTimeout(settleTimers.get(thread.id));
       settleTimers.delete(thread.id);
+      scannedThreads.delete(thread.id);
     });
   }
 
@@ -957,7 +1011,10 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   bb.rpc.register(rpcContract, {
-    followups_get: ({ threadId }) => readState(threadId),
+    followups_get: async ({ threadId }) => {
+      await scanOnFirstLook(threadId);
+      return bannerState(await readState(threadId));
+    },
     followups_set_enabled: ({ threadId, enabled: on }) => setThreadEnabled(threadId, on),
     followups_expand: ({ threadId, id }) => expandFollowup(threadId, id),
     followups_dismiss: async ({ threadId }) => {
@@ -1007,9 +1064,10 @@ export default async function plugin(bb: BbPluginApi) {
         case "show": {
           const threadId = args[0];
           if (!threadId || args.length !== 1) break;
+          await scanOnFirstLook(threadId);
           const state = await readState(threadId);
           const text = !state.enabled
-            ? `Follow-ups are off for ${threadId}.`
+            ? `Follow-ups are ${offReason(state)} for ${threadId}.`
             : state.suggestions.length === 0
               ? `No follow-ups for ${threadId} (${state.status}).`
               : [
@@ -1024,7 +1082,7 @@ export default async function plugin(bb: BbPluginApi) {
                       : "") +
                     ` by ${state.stats.model}`] : []),
                 ].join("\n");
-          return reply({ threadId, ...state }, text);
+          return reply({ threadId, ...bannerState(state) }, text);
         }
         case "clear": {
           const threadId = args[0];
@@ -1063,10 +1121,10 @@ export default async function plugin(bb: BbPluginApi) {
         case "regenerate": {
           const threadId = args[0];
           if (!threadId || args.length !== 1) break;
-          if (!(await readState(threadId)).enabled) {
+          if (!(await followupsWanted(threadId))) {
             return {
               exitCode: 1,
-              stderr: `Follow-ups are turned off for ${threadId}. Run \`bb followups on ${threadId}\` first.\n`,
+              stderr: `Follow-ups are ${offReason(await readState(threadId))} for ${threadId}. Run \`bb followups on ${threadId}\` first.\n`,
             };
           }
           const thread = await bb.sdk.threads.get({ threadId });
@@ -1090,7 +1148,7 @@ export default async function plugin(bb: BbPluginApi) {
           // Only this run's timing is reported: if it draws nothing, there is none.
           lastRuns.delete(`suggest:${threadId}`);
           await generate(threadId, answer);
-          const state = await readState(threadId);
+          const state = bannerState(await readState(threadId));
           const timing = lastRuns.get(`suggest:${threadId}`) ?? null;
           const withReason = state.suggestions.filter((item) => item.why).length;
           return reply(

@@ -99,6 +99,7 @@ export async function boot({ threads = { t1: {} }, settings = {}, claude = {}, m
     listCalls: [],
     getCalls: [],
     listFails: false,
+    eventsFails: false,
     metadataWrites: 0,
     metadataFails: false,
   };
@@ -168,6 +169,7 @@ export async function boot({ threads = { t1: {} }, settings = {}, claude = {}, m
           return structuredClone(metaOf(pluginId, threadId));
         },
         updatePluginMetadata: async ({ threadId, pluginId = "followups", set = {}, remove = [] }) => {
+          if (world.metadataFails) throw new Error("metadata is down");
           world.metadataWrites += 1;
           const next = { ...metaOf(pluginId, threadId), ...structuredClone(set) };
           for (const key of remove) delete next[key];
@@ -213,6 +215,7 @@ export async function boot({ threads = { t1: {} }, settings = {}, claude = {}, m
             .map((event) => ({ input: event.data.input })),
         events: {
           list: async ({ threadId, types, afterSeq, order = "asc", limit = "100" }) => {
+            if (world.eventsFails) throw new Error("events are down");
             let rows = (world.events[threadId] ?? []).filter((event) => !types || types.includes(event.type));
             if (afterSeq !== undefined) rows = rows.filter((event) => event.seq > Number(afterSeq));
             if (order === "desc") rows = [...rows].reverse();

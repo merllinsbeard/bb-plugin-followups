@@ -6,7 +6,9 @@ import test from "node:test";
 import { makePluginAgentConfigurationContext } from "@get-bb/plugin-sdk/testing";
 import { alive, boot, sleep, until } from "./helpers.mjs";
 
-const READY = { status: "ready", suggestions: [{ id: "a1", label: "Add a test", why: "Untested" }], updatedAt: Date.now() };
+// t1's turns already read (its start turn is seq 1), so only what a test does writes.
+const SCANNED = { turns: { scannedSeq: 1, lastOwnerSeq: 1, lastOwnerAt: 0 } };
+const READY = { ...SCANNED, status: "ready", suggestions: [{ id: "a1", label: "Add a test", why: "Untested" }], updatedAt: Date.now() };
 const signals = (w) => w.host.harness.realtimeSignals.length;
 
 // ---- events with nothing to clear ----
@@ -17,7 +19,7 @@ for (const [name, fire] of [
   ["a message being dispatched", (w) => w.event("message.dispatched", { entry: { threadId: "t1" } })],
 ]) {
   test(`${name} on a thread with nothing showing writes nothing and broadcasts nothing`, async () => {
-    const w = await boot();
+    const w = await boot({ metadata: { t1: structuredClone(SCANNED) } });
     const writes = w.world.metadataWrites;
     await fire(w);
     await sleep(100);
@@ -100,7 +102,7 @@ test("a thread switched off stays off when its stored follow-ups can't be read",
 });
 
 test("a thread switched on stays on when its stored follow-ups can't be read", async () => {
-  const w = await boot({ metadata: { t1: { override: "on", status: 42 } }, settings: { enabled: false } });
+  const w = await boot({ metadata: { t1: { override: "on", status: 42 } } });
   assert.equal((await w.shown()).enabled, true);
   await w.dispose();
 });
