@@ -7,7 +7,7 @@ short version; this is the detail behind it, kept for maintainers.
 ## Overview
 
 When a visible thread the owner has written in goes idle, the server makes one
-`claude -p` call for four typed candidate follow-ups, keeps three, and stores
+model call for four typed candidate follow-ups, keeps three, and stores
 them in the thread's plugin metadata; the banner reads them over RPC and
 refreshes on a realtime signal. Clicking a follow-up makes a second call that
 expands it into a full first-person message, which goes into the composer. The
@@ -53,7 +53,7 @@ calls read.
   threads updated in the last day from the same section, or the same project
   when the thread has no section), and up to ten of his recent picks.
 - **What it returns.** Exactly four candidates `{label ≤64, kind, why ≤140}` and
-  `cardStale` with an optional reason, checked against a schema. Kinds are
+  `cardStale` and a required nullable `staleReason`, checked against a schema. Kinds are
   `answer`, `continue`, `refocus`, `check`, `delegate`, `close`.
 - **Open questions** are detected in code: a line ending in "?" or at least two
   numbered options in the answer's last 800 characters. The model is told the
@@ -81,16 +81,18 @@ calls read.
 
 ## Model calls
 
-- **One spawner.** `lib/claude.ts` `callClaude` is the only code that starts a
-  process. Each call is `claude -p --output-format json --json-schema …` with
-  the model and effort from settings, `--setting-sources ""`,
-  `--strict-mcp-config`, `--disable-slash-commands`,
-  `--no-session-persistence`, the prompt on stdin, in a fresh empty temporary
-  directory removed afterwards, with the plugin's `BB_*` variables left out of
-  its environment. Suggestions and drafts add `--tools ""`. The JSON result's
-  `structured_output` is parsed with the same schema the flag was derived
-  from; `is_error`, unreadable output and a schema mismatch are failures.
-  `stats` (time, tokens, turns, refused tools) come from the same result.
+- **One spawner.** `lib/model.ts` `callModel` owns both CLI transports.
+  Settings parse once into an immutable model choice. `gpt-*` routes to Codex;
+  `claude-*` and native Claude aliases route to Claude. Unknown model names
+  fail without spawning. Defaults are `gpt-6-luna` and `max`.
+  Each call owns a private directory, sends source material on stdin, strips
+  `BB_*` identity, and validates the final output against its Zod schema.
+  Codex also strips API-key overrides, uses a native instruction file, requires
+  exit zero and `turn.completed`, and reads only the `-o` answer file.
+  Both bound retained output and wait for process close before cleanup.
+  Codex cache hits are subtracted from input. Reasoning is part of output,
+  not an additional contribution to total tokens. Comparable turns and
+  permission refusals remain Claude-only statistics.
 - **Timeouts fit max effort.** A suggestion call may take 6 min, a draft 60 s,
   a card run 240 s. Measured on one live thread with Haiku 5.5 at max: a
   suggestion 176 s and 258 s (40k and 60k thinking tokens; 7 s at low), and
@@ -132,13 +134,14 @@ calls read.
   today's, the environment path when it exists on this machine, and the
   previous card. Failed sources become `gaps`; a gap the model restates for the
   same source is dropped.
-- **The run**: `callClaude` with `--restricted`, `--tools Read,Grep,Glob,Bash`,
-  `--allowedTools Read Grep Glob "Bash(ov find:*)"`, `--add-dir` the
-  environment path, `--max-turns 12`, each Bash command capped at 12 s through
-  `BASH_DEFAULT_TIMEOUT_MS`/`BASH_MAX_TIMEOUT_MS`, and a 240 s timeout. The
-  model fills `project`, `task`, `goals`, `decisions`, `siblings`, `focusFit`
-  and its own gaps; the plugin adds the ids, `builtAt`, `day` and `role` and
-  writes the card, the attempt and a cleared stale flag in one metadata write.
+- **The run** uses `callModel` and the same choice as suggestions and drafts.
+  The [enforcement table](CARD.md#exploration-limits) describes each provider's
+  capabilities. Claude restricts its readers and `ov find`. Codex uses a
+  private network-enabled workspace and instructs the model about read scope,
+  commands, steps, and per-command timeouts. Both enforce a 240-second
+  whole-call deadline. The model fills the content fields; the plugin adds
+  the ids, `builtAt`, `day`, and `role` and writes the card, attempt, and
+  cleared stale flag in one metadata write.
 - **The run log**: each finished run adds a row to `card_runs` in the plugin's
   SQLite database (reason, ok, error, ms, tokens, turns, refused tools; newest
   500 rows, 30 days), summarised by `bb followups stats`.
@@ -178,7 +181,7 @@ list in `server.ts`, because the host numbers them by index.
   `followups_set_enabled`, `followups_expand`, `followups_dismiss`), settings
   (`model`, `effort`, `card`, `cardRuns`) and the CLI. A `working` state older
   than the call timeout plus 45 s is reported as `empty`.
-- `lib/claude.ts`, `lib/start-origin.ts`, `lib/thread-context.ts`,
+- `lib/model.ts`, `lib/start-origin.ts`, `lib/thread-context.ts`,
   `lib/suggest.ts`, `lib/learning.ts`, `lib/card.ts`, `lib/card-contract.ts` —
   as described above.
 - `app.tsx` — the frontend: a `Follow-ups` panel above the thread composer
@@ -214,10 +217,14 @@ list in `server.ts`, because the host numbers them by index.
 
 `npm test` runs everything on the SDK's fake plugin host; `tests/helpers.mjs`
 builds a fake bb (threads, their turn events, plugin metadata, environments)
-and puts `tests/fake-claude/claude` first on `PATH`. The fake CLI logs argv,
-stdin, cwd and the Bash timeout of each call and answers per call kind from
-fixtures, with delays, gates, failures, usage and refused tools.
+and puts fake Codex and Claude CLIs first on `PATH`. The fakes share fixtures
+and log argv, stdin, system text, schema, cwd, and child identity. Each can
+answer, fail, delay, wait on a gate, or start a descendant for cancellation
+checks. Codex validates strict schemas and emits chunked JSONL and final files.
 
+- `model-call.test.mjs` covers both providers through the public plugin,
+  strict schemas, final files, protocol failures, bounded output, usage,
+  sandbox flags, invalid settings recovery, and descendant cancellation.
 - `lean-call.test.mjs` — the flags of every call, the default model and effort,
   stdin and the removed temporary directory, failures, schema mismatches, a
   missing CLI, drafts, `model`/`model-clear`, and a reload killing calls.

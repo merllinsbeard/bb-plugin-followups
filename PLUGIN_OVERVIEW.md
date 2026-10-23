@@ -38,23 +38,28 @@ Suggest clickable follow-up prompts above the composer when a thread finishes.
 
 ## How it works
 
-When a thread you write in goes idle, the server makes one `claude -p` call on
-your own Claude login, with no tools, for four candidate follow-ups, keeps the
-best three and stores them in the thread's plugin metadata. The banner reads
-them over RPC and refreshes on a realtime signal. Clicking one makes a second
-call that writes the full first-person message. On your first message of the
-day in a thread, a background run builds the thread's card: it may read the
-project's files and search your memory with `ov find`, nothing else.
+When a thread you write in goes idle, the server calls the selected model for
+four candidate follow-ups, keeps the best three, and stores them in thread
+metadata. Clicking one makes a second call that writes the message. The first
+message of the day also starts a background card run. All three use the same
+model and effort settings.
 
 ## Cost and safety
 
-Nothing is ever sent for you, and a draft never overwrites what you typed.
-Each suggestion, draft and card is a run on your Claude login (Haiku 5.5 at
-max effort by default), so it uses your plan; at most four suggestion calls
-and two card runs go at once, and the footer and `bb followups stats` show
-what they cost. Suggestion and draft calls have no tools and run in an empty
-temporary directory. Card runs are read-only and confined to the thread's
-project directory and `ov find`.
+Nothing is sent for you. Drafts preserve what you typed. Calls default to
+`gpt-6-luna` at `max` through `codex exec` on your ChatGPT login. A `claude-*`
+model or the `haiku`, `sonnet`, and `opus` aliases selects your Claude login.
+Existing saved Claude models remain valid. Details shows the provider, model,
+effort, and token split. At most four suggestion calls and two card runs run
+at once by default.
+
+Claude disables tools for suggestions and drafts and restricts card readers
+and `ov find`. Codex suppresses native features and uses a private sandbox,
+but code-mode `exec` remains. Card read scope, allowed commands, step budget,
+and per-command timeout are instructions on Codex. Its network-enabled card
+sandbox can reach other host-readable files and remote APIs. The plugin
+enforces whole-call deadlines and kills the process group on timeout or
+cancellation. See `docs/CARD.md` for the exact limits.
 
 ## For agents
 

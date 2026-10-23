@@ -73,9 +73,36 @@ around it, the owner's open «Срочно и важно» and «Важно, н�
 matrix (`otask matrix`; nothing else from it ever leaves the plugin), and today's
 «Фокус» and «Деньги» from the morning brief when there is one for today.
 
-The model (the plugin's `model` and `effort` settings, through `claude -p` on the
-owner's login) may then read files under the thread's environment directory and run
-`ov find` against the owner's memory, and nothing else: `--restricted`, the tools
-`Read Grep Glob Bash`, only `Bash(ov find:*)` allowed, `--add-dir` the environment
-path, at most 12 turns, each `ov find` cut off after 12 s, the run after 240 s.
-`bb followups stats` shows what card runs cost and whether any tool call was refused.
+Every card uses the plugin's `model` and `effort` settings. The default is
+`codex/gpt-6-luna@max` through the owner's ChatGPT login. Claude remains
+selectable by model name. Code gathers the same packet for either provider.
+
+## Exploration limits
+
+| Capability | Claude | Codex |
+| --- | --- | --- |
+| Project reads | Restricted Read, Grep, and Glob with the environment path added | Instructed to read only the project. Other host-readable paths remain accessible. |
+| Commands | Bash allowlist permits `ov find` | Instructed to run only `ov find`. Network access can reach other services and writable remote APIs. |
+| Steps | CLI enforces 12 turns. Prompt requests at most 8 tool calls. | Both the 12-step ceiling and 8-tool budget are instructions. |
+| Per-command timeout | Bash timeout variables enforce 12 seconds | Instructed to request a 12-second timeout. |
+| Whole call | Parent enforces 240 seconds and kills the process group | Parent enforces 240 seconds and kills the process group |
+| Writes | Existing restricted tool policy | Workspace-write sandbox, private cwd, child TMPDIR under cwd, no `--add-dir`. Excludes `/tmp` and inherited TMPDIR from writable roots. No-write behavior outside those sandbox limits is instructed. |
+| Other features | Strict empty MCP configuration and no user setting sources | Apps, plugins, memories, skill search, tool suggestions, delegation, images, browser, goals, and sleep disabled. Web search disabled. |
+
+Codex uses `model_instructions_file` for the purpose's system text and reads
+source material from stdin. Flags are pinned to codex-cli 0.163.0. Native
+suppression reduces available capabilities. Code-mode `exec` remains and is
+not visible in JSONL. This is not a proven zero-tool boundary, including for
+suggestions and drafts, which also disable `shell_tool` and `unified_exec`
+and use a read-only sandbox.
+
+Each call owns private temporary files. Timeout and cancellation kill the
+process group, wait for close, and remove those files. A host crash can leave
+a child or files. There are no automatic retries or provider fallback.
+
+`bb followups stats` counts recorded tool refusals in `withDeniedTools`.
+Codex does not report equivalent refusals or a comparable `turns` count, so
+neither is synthesized. Missing refusals do not prove that a run stayed in
+scope. Codex input usage excludes cache hits. Reasoning tokens are a subset
+of output tokens and are not added again to the total. Older stored stats
+remain readable.
