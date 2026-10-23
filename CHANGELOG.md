@@ -6,6 +6,38 @@ All notable changes to Followups are documented here. The format follows
 
 ## Unreleased
 
+### Added
+
+- Thread cards: on the owner's first message of the day in a thread, a
+  background `claude` run writes a short card (task, project, related goals,
+  earlier decisions, focus fit) to the public `card` metadata key. It may only
+  read the project directory and run `ov find`. Contract in `docs/CARD.md`;
+  `bb followups card` and `cards` read it.
+- Suggestions have a kind (answer, continue, refocus, check, delegate, close).
+  An answer that ends with questions or numbered options gets one tile
+  settling them first.
+- The model sees the Bangkok clock, the thread's first prompt, the owner's own
+  prompts, the threads around it, its card, and his recent picks.
+- `bb followups stats`: how often a suggestion became the owner's message, by
+  kind, and what card runs cost.
+
+### Changed
+
+- Follow-ups appear only in threads the owner has written in; threads only
+  agents, crons or plugins write in get none unless switched on. The
+  `enabled` setting is gone.
+- Every suggestion, draft and card is one `claude -p` call on the owner's
+  Claude login, with its output checked against a schema. No hidden worker
+  threads are spawned. Settings are now `model`, `effort`, `card` and
+  `cardRuns`; the provider model picker is gone.
+- The banner always shows three suggestions.
+
+### Removed
+
+- The hidden worker threads, the text parser, the `suggestPrompt` and
+  `keepWorkers` settings, the Codex backfill script and the prompt eval.
+  `bb followups cleanup` still deletes workers earlier releases left.
+
 ## 0.6.6 - 2026-10-18
 
 ### Changed
