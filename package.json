@@ -29,7 +29,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.6.65",
+    "@get-bb/plugin-sdk": "0.6.68",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
@@ -41,5 +41,8 @@
     "hono": "^4.11.9",
     "tailwind-merge": "^3.4.0",
     "typescript": "^5.7.0"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true
   }
 }
