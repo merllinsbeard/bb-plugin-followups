@@ -238,8 +238,8 @@ export async function boot({ threads = { t1: {} }, settings = {}, claude = {}, m
             .filter((id) => args.environmentId === undefined || world.threads[id].environmentId === args.environmentId)
             .filter((id) => args.projectId === undefined || world.threads[id].projectId === args.projectId)
             .filter((id) => args.sectionId === undefined || world.threads[id].sectionId === args.sectionId)
-            .sort((a, b) => world.threads[b].updatedAt - world.threads[a].updatedAt)
-            .slice(0, args.limit ?? 100)
+            .sort((a, b) => world.threads[b].createdAt - world.threads[a].createdAt)
+            .slice(args.offset ?? 0, (args.offset ?? 0) + (args.limit ?? 100))
             .map(row);
         },
         output: async ({ threadId }) => ({ output: world.threads[threadId]?.answer ?? "" }),

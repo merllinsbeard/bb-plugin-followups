@@ -330,3 +330,28 @@ test("a thread only agents write in gets no card", async () => {
   assert.equal(cardCalls(w).length, 0);
   await w.dispose();
 });
+
+test("`cards` finds a card on a thread past the first page, and `--day` keeps the threads updated that Bangkok day", async () => {
+  ownerHome();
+  const now = Date.now();
+  const filler = Object.fromEntries(Array.from({ length: 450 }, (_, i) => [`f${i}`, { createdAt: now - i * 1000 }]));
+  const w = await cardsOn({
+    threads: { ...filler, old: { createdAt: now - 40 * 24 * HOUR, updatedAt: now - 60_000 }, stale: { createdAt: now - 41 * 24 * HOUR, updatedAt: now - 30 * 24 * HOUR } },
+    metadata: { old: { card: stored({ threadId: "old" }) }, stale: { card: stored({ threadId: "stale" }) } },
+  });
+  assert.deepEqual(JSON.parse((await w.cli("cards", "--json")).stdout).map((c) => c.threadId).sort(), ["old", "stale"]);
+  assert.deepEqual(JSON.parse((await w.cli("cards", "--day", "today", "--json")).stdout).map((c) => c.threadId), ["old"]);
+  await w.dispose();
+});
+
+test("a sibling created long ago but updated within the window is a sibling", async () => {
+  ownerHome();
+  const now = Date.now();
+  const filler = Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`f${i}`, { sectionId: "s", createdAt: now - i * 1000, updatedAt: now - 48 * HOUR }]));
+  const w = await cardsOn({
+    threads: { ...filler, t1: { sectionId: "s", createdAt: now - 1000 }, elder: { sectionId: "s", title: "Elder work", createdAt: now - 90 * 24 * HOUR, updatedAt: now - 5 * 60_000 } },
+  });
+  await w.cli("card", "t1", "--refresh", "--json");
+  assert.match(cardCalls(w)[0].stdin, /sibling: «Elder work»/);
+  await w.dispose();
+});

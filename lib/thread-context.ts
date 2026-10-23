@@ -228,6 +228,8 @@ const FIRST_PROMPT_CHARS = 2_500;
 /** Turn requests read for the owner's prompts: enough to reach past a run of agent reports. */
 const RECENT_TURNS = 40;
 const SIBLINGS = 8;
+/** Rows read for the section or project: the host lists by creation, so a long-lived thread active today sits deep in it. */
+const AROUND_ROWS = 200;
 /** Items read back from a prompt for the message before it: a turn's last item is its message. */
 const ITEMS_BEFORE = 20;
 const SIBLING_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -315,7 +317,7 @@ export function createThreadContextReader(bb: BbPluginApi, startOrigins: StartOr
       thread.parentThreadId === null ? null : bb.sdk.threads.get({ threadId: thread.parentThreadId }).catch(() => null),
       bb.sdk.threads.list({ parentThreadId: thread.id, includeHidden: true, limit: 20 }),
       // A section groups related work; Personal holds unrelated threads, so the project is the fallback only.
-      bb.sdk.threads.list(thread.sectionId !== null ? { sectionId: thread.sectionId, limit: 30 } : { projectId: thread.projectId, limit: 30 }),
+      bb.sdk.threads.list(thread.sectionId !== null ? { sectionId: thread.sectionId, limit: AROUND_ROWS } : { projectId: thread.projectId, limit: AROUND_ROWS }),
     ]);
     const newest = (rows: Row[]) => [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
     const line = (row: Row, relation: SiblingLine["relation"]): SiblingLine => ({

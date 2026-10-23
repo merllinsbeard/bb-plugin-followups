@@ -60,6 +60,8 @@ export const CARD_MAX_TURNS = 12;
 export const OV_CALL_CAP_MS = 12_000;
 const MATRIX_TIMEOUT_MS = 5_000;
 const MATRIX_CARDS = 20;
+/** Rows per `threads.list` page and ids per metadata read. */
+const LIST_PAGE = 200;
 
 /**
  * Whether a card is due, and why. Evaluated on every new owner turn and every stale flag.
@@ -510,13 +512,23 @@ export function createCardService(deps: {
     },
     status,
     async list({ projectId, day }) {
-      const rows = await bb.sdk.threads.list({ ...(projectId !== undefined ? { projectId } : {}), limit: 200 });
-      if (rows.length === 0) return [];
-      const { threads } = await bb.sdk.threads.experimental_listPluginMetadata({ pluginId: bb.pluginId, threadIds: rows.map((row) => row.id) });
-      return threads
-        .map((entry) => readCardV1(entry.metadata[CARD_KEY]))
-        .filter((card): card is CardV1 => card !== null && (day === undefined || card.day === day))
-        .sort((a, b) => b.builtAt - a.builtAt);
+      // The host lists pinned threads first, then by creation, so a busy host buries a recent thread past the first page.
+      const since = day === undefined ? 0 : Date.parse(`${day}T00:00:00+07:00`);
+      const ids: string[] = [];
+      for (let offset = 0; ; offset += LIST_PAGE) {
+        const rows = await bb.sdk.threads.list({ ...(projectId !== undefined ? { projectId } : {}), limit: LIST_PAGE, offset });
+        for (const row of rows) if (row.updatedAt >= since) ids.push(row.id);
+        if (rows.length < LIST_PAGE) break;
+      }
+      const cards: CardV1[] = [];
+      for (let from = 0; from < ids.length; from += LIST_PAGE) {
+        const { threads } = await bb.sdk.threads.experimental_listPluginMetadata({ pluginId: bb.pluginId, threadIds: ids.slice(from, from + LIST_PAGE) });
+        for (const entry of threads) {
+          const found = readCardV1(entry.metadata[CARD_KEY]);
+          if (found !== null && (day === undefined || found.day === day)) cards.push(found);
+        }
+      }
+      return cards.sort((a, b) => b.builtAt - a.builtAt);
     },
     runSummary({ days }) {
       if (!db) return null;
