@@ -67,27 +67,27 @@ test("a 'working' state left behind by a restart reads as empty once it is old",
 
 test("a reload kills a message draft in flight too, and says nothing afterwards", async () => {
   const w = await boot({ metadata: { t1: structuredClone(READY) } });
-  w.claude.answer({ draft: { output: { message: "late" }, gate: w.claude.gate("never") } });
+  w.model.answer({ draft: { output: { message: "late" }, gate: w.model.gate("never") } });
   const outcome = w.rpc("followups_expand", { threadId: "t1", id: "a1" }).then((value) => ({ value }), (error) => ({ error }));
-  await until(() => w.claude.calls("draft").length === 1);
+  await until(() => w.model.calls("draft").length === 1);
   await w.host.harness.dispose();
-  await until(() => !alive(w.claude.calls("draft")[0].pid));
+  await until(() => !alive(w.model.calls("draft")[0].pid));
   await outcome; // settles instead of hanging
   assert.deepEqual(w.warnings(), []);
-  await w.claude.cleanup();
+  await w.model.cleanup();
 });
 
 test("a call that hasn't started when the plugin reloads never starts", async () => {
   const w = await boot();
-  w.claude.answer({ suggest: { output: suggested(), gate: w.claude.gate("held") } });
+  w.model.answer({ suggest: { output: suggested(), gate: w.model.gate("held") } });
   for (const id of ["a", "b", "c", "d", "e"]) w.addThread(id);
   for (const id of ["a", "b", "c", "d", "e"]) await w.idle(id);
-  await until(() => w.claude.calls("suggest").length === 4);
+  await until(() => w.model.calls("suggest").length === 4);
   await w.host.harness.dispose();
-  w.claude.open("held");
+  w.model.open("held");
   await sleep(400);
-  assert.equal(w.claude.calls("suggest").length, 4, "the fifth, still queued, never ran");
-  await w.claude.cleanup();
+  assert.equal(w.model.calls("suggest").length, 4, "the fifth, still queued, never ran");
+  await w.model.cleanup();
 });
 
 // ---- unreadable stored metadata ----
@@ -97,7 +97,7 @@ test("a thread switched off stays off when its stored follow-ups can't be read",
   assert.equal((await w.shown()).enabled, false);
   await w.idle();
   await sleep(250);
-  assert.equal(w.claude.calls().length, 0, "no call for a thread the user switched off");
+  assert.equal(w.model.calls().length, 0, "no call for a thread the user switched off");
   await w.dispose();
 });
 
@@ -112,7 +112,7 @@ test("if the thread's choice can't be read, no call is made and the failure is l
   w.world.metadataFails = true;
   await w.idle();
   await sleep(300);
-  assert.equal(w.claude.calls().length, 0, "a billed call for a thread that may be off would be worse than none");
+  assert.equal(w.model.calls().length, 0, "a billed call for a thread that may be off would be worse than none");
   assert.ok(w.warnings().some((m) => /t1/.test(m) && /metadata is down/.test(m)), JSON.stringify(w.logs()));
   await w.dispose();
 });
@@ -123,7 +123,7 @@ test("an idle thread whose last output is the user's own message gets no follow-
   const w = await boot({ threads: { t1: { turns: [{ initiator: "user", source: "spawn", text: "Fix the flaky retry test" }] } } });
   await w.idle("t1", "Fix the flaky retry test"); // BB reports the user's message when no assistant reply exists
   await until(() => w.logs().some((m) => /no assistant answer/.test(m)));
-  assert.equal(w.claude.calls().length, 0);
+  assert.equal(w.model.calls().length, 0);
   assert.equal((await w.shown()).status, "empty");
   await w.dispose();
 });
@@ -132,7 +132,7 @@ test("a real answer to that message is still drafted for", async () => {
   const w = await boot({ threads: { t1: { turns: [{ initiator: "user", source: "spawn", text: "Fix the flaky retry test" }] } } });
   await w.idle("t1", "I fixed it by awaiting the timer. Want me to run the suite?");
   await w.untilReady();
-  assert.equal(w.claude.calls("suggest").length, 1);
+  assert.equal(w.model.calls("suggest").length, 1);
   await w.dispose();
 });
 

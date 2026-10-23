@@ -9,9 +9,9 @@ All notable changes to Followups are documented here. The format follows
 ### Added
 
 - Thread cards: on the owner's first message of the day in a thread, a
-  background `claude` run writes a short card (task, project, related goals,
-  earlier decisions, focus fit) to the public `card` metadata key. It may only
-  read the project directory and run `ov find`. Contract in `docs/CARD.md`;
+  background model run writes a short card (task, project, related goals,
+  earlier decisions, focus fit) to the public `card` metadata key. It is asked to
+  read the project directory and run `ov find`. Provider limits in `docs/CARD.md`;
   `bb followups card` and `cards` read it.
 - Suggestions have a kind (answer, continue, refocus, check, delegate, close).
   An answer that ends with questions or numbered options gets one tile
@@ -26,10 +26,17 @@ All notable changes to Followups are documented here. The format follows
 - Follow-ups appear only in threads the owner has written in; threads only
   agents, crons or plugins write in get none unless switched on. The
   `enabled` setting is gone.
-- Every suggestion, draft and card is one `claude -p` call on the owner's
-  Claude login, with its output checked against a schema. No hidden worker
-  threads are spawned. Settings are now `model`, `effort`, `card` and
-  `cardRuns`; the provider model picker is gone.
+- Suggestions, drafts, and cards default to `gpt-6-luna` at `max` through
+  `codex exec` on the owner's ChatGPT login. `claude-*` models and native
+  aliases keep the Claude route. Existing saved Claude models remain selected.
+  The four settings remain `model`, `effort`, `card`, and `cardRuns`.
+- One model boundary owns provider routing, strict output validation, bounded
+  protocol output, cancellation, and cleanup after process close. Codex needs
+  `turn.completed`, exit zero, and a valid final answer file. Nonzero exits
+  fail even if a valid answer exists.
+- `bb followups model` reports the provider. `model-clear` resets to Luna/max.
+  Usage separates fresh and cached input without counting reasoning twice.
+  Codex tool limits that rely on instructions are documented in `docs/CARD.md`.
 - The banner always shows three suggestions.
 
 ### Removed

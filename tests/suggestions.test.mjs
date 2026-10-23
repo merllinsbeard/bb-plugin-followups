@@ -8,6 +8,7 @@ import { boot } from "./helpers.mjs";
 const candidates = (...items) => ({
   candidates: items.map(([kind, label]) => ({ kind, label, why: `Because of ${label}` })),
   cardStale: false,
+  staleReason: null,
 });
 const shownKinds = async (w, id = "t1") => (await w.shown(id)).suggestions.map((s) => s.kind);
 const shownLabels = async (w, id = "t1") => (await w.shown(id)).suggestions.map((s) => s.label);
@@ -29,28 +30,28 @@ for (const [shape, answer] of [
   ["numbered choices with dashes", "Варианты:\n1 — удалить старые фикстуры\n2 — оставить для регрессии"],
 ]) {
   test(`an answer that ends with ${shape} gets its answer suggestion first`, async () => {
-    const w = await boot({ claude: { suggest: { output: ASKS } }, threads: { t1: { answer } } });
+    const w = await boot({ answers: { suggest: { output: ASKS } }, threads: { t1: { answer } } });
     await w.idle();
     await w.untilReady();
     assert.deepEqual(await shownKinds(w), ["answer", "continue", "check"]);
-    assert.match(w.claude.calls("suggest")[0].stdin, /<open_questions>yes<\/open_questions>/);
+    assert.match(w.model.calls("suggest")[0].stdin, /<open_questions>yes<\/open_questions>/);
     await w.dispose();
   });
 }
 
 test("an answer that asked nothing never gets an answer suggestion", async () => {
-  const w = await boot({ claude: { suggest: { output: ASKS } }, threads: { t1: { answer: "Fixed the parser and pushed the branch." } } });
+  const w = await boot({ answers: { suggest: { output: ASKS } }, threads: { t1: { answer: "Fixed the parser and pushed the branch." } } });
   await w.idle();
   await w.untilReady();
   assert.ok(!(await shownKinds(w)).includes("answer"));
   assert.ok((await shownLabels(w)).includes("делай ретраи"));
-  assert.match(w.claude.calls("suggest")[0].stdin, /<open_questions>no<\/open_questions>/);
+  assert.match(w.model.calls("suggest")[0].stdin, /<open_questions>no<\/open_questions>/);
   await w.dispose();
 });
 
 test("a suggestion written as the assistant is dropped", async () => {
   const output = candidates(["check", "Сейчас проверю логи"], ["continue", "делай ретраи"], ["close", "коммить"], ["delegate", "I'll split the parser out"]);
-  const w = await boot({ claude: { suggest: { output } } });
+  const w = await boot({ answers: { suggest: { output } } });
   await w.idle();
   await w.untilReady();
   assert.deepEqual(await shownLabels(w), ["делай ретраи", "коммить"]);
@@ -59,7 +60,7 @@ test("a suggestion written as the assistant is dropped", async () => {
 
 test("two candidates that say the same thing show once", async () => {
   const output = candidates(["continue", "Делай ретраи"], ["check", "делай ретраи!"], ["close", "коммить"], ["delegate", "вынеси парсер"]);
-  const w = await boot({ claude: { suggest: { output } } });
+  const w = await boot({ answers: { suggest: { output } } });
   await w.idle();
   await w.untilReady();
   assert.deepEqual(await shownLabels(w), ["Делай ретраи", "коммить", "вынеси парсер"]);
@@ -71,7 +72,7 @@ test("the model is told the time in Bangkok", async () => {
   await w.idle();
   await w.untilReady();
   const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Bangkok" }).format(new Date());
-  assert.match(w.claude.calls("suggest")[0].stdin, new RegExp(`<now>${day}, \\S+, \\d\\d:\\d\\d \\(Asia/Bangkok\\)</now>`));
+  assert.match(w.model.calls("suggest")[0].stdin, new RegExp(`<now>${day}, \\S+, \\d\\d:\\d\\d \\(Asia/Bangkok\\)</now>`));
   await w.dispose();
 });
 
@@ -91,7 +92,7 @@ test("it sees the owner's prompts and the task, never an agent's message as his"
   });
   await w.idle("kid");
   await w.untilReady("kid");
-  const { stdin } = w.claude.calls("suggest")[0];
+  const { stdin } = w.model.calls("suggest")[0];
   assert.match(stdin, /<first_prompt>\nPort the parser to zod\n<\/first_prompt>/);
   assert.match(stdin, /<owner_prompts>\n\[latest\] Keep the old error messages\n<\/owner_prompts>/);
   assert.doesNotMatch(stdin, /bump the version/);
@@ -113,7 +114,7 @@ test("it sees the parent, the children and the project's threads from the last d
   });
   await w.idle("t1");
   await w.untilReady("t1");
-  const { stdin } = w.claude.calls("suggest")[0];
+  const { stdin } = w.model.calls("suggest")[0];
   const siblings = /<siblings>\n([\s\S]*?)\n<\/siblings>/.exec(stdin)[1];
   assert.match(siblings, /child: «Port the parser» — error, 5 min ago/);
   assert.match(siblings, /sibling: «Fix the sidebar» — idle, 60 min ago/);
@@ -132,7 +133,7 @@ test("in a section, the threads around it come from that section", async () => {
   });
   await w.idle();
   await w.untilReady();
-  const { stdin } = w.claude.calls("suggest")[0];
+  const { stdin } = w.model.calls("suggest")[0];
   assert.match(stdin, /Same section/);
   assert.doesNotMatch(stdin, /Same project, no section/);
   await w.dispose();
@@ -147,11 +148,11 @@ test("`bb followups show` lists each suggestion's kind", async () => {
 });
 
 test("clicking an answer suggestion tells the draft it is one", async () => {
-  const w = await boot({ claude: { suggest: { output: ASKS } }, threads: { t1: { answer: "Delete them?\n1. yes\n2. no" } } });
+  const w = await boot({ answers: { suggest: { output: ASKS } }, threads: { t1: { answer: "Delete them?\n1. yes\n2. no" } } });
   await w.idle();
   await w.untilReady();
   const [first] = (await w.shown()).suggestions;
   await w.rpc("followups_expand", { threadId: "t1", id: first.id });
-  assert.match(w.claude.calls("draft")[0].stdin, /<picked kind="answer">1 — удали, 2 — оставь<\/picked>/);
+  assert.match(w.model.calls("draft")[0].stdin, /<picked kind="answer">1 — удали, 2 — оставь<\/picked>/);
   await w.dispose();
 });

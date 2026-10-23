@@ -16,7 +16,7 @@ const captainWith = (...kids) => ({
 async function crew(threads) {
   const w = await boot({ threads });
   return Object.assign(w, {
-    calls: () => w.claude.calls("suggest").length,
+    calls: () => w.model.calls("suggest").length,
     // a child stopped working: change its status, tell the plugin, and let the settle timer fire
     async childStops(id, status = "idle") {
       w.world.threads[id].status = status;
@@ -166,11 +166,11 @@ test("a thread that was never waiting is left alone when a child finishes", asyn
 
 test("a child that starts working while the answer is being drafted keeps the follow-ups back", async () => {
   const w = await crew(captainWith(["kid", "idle"]));
-  w.claude.answer({ suggest: [{ output: suggested("Add a test"), gate: w.claude.gate("first") }, { output: suggested("Add a test") }] });
+  w.model.answer({ suggest: [{ output: suggested("Add a test"), gate: w.model.gate("first") }, { output: suggested("Add a test") }] });
   await w.idle("captain");
   await until(() => w.calls() === 1);
   w.world.threads.kid.status = "active";
-  w.claude.open("first");
+  w.model.open("first");
   await until(() => w.logs().some((m) => /holding them back/.test(m)));
   const got = await w.shown("captain");
   assert.equal(got.status, "empty", "the drafted suggestions must not be shown while a child runs");

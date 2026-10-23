@@ -7,7 +7,7 @@ import test from "node:test";
 import { makeMessageDispatchHookContext } from "@get-bb/plugin-sdk/testing";
 import { boot, sleep, until } from "./helpers.mjs";
 
-const calls = (w) => w.claude.calls("suggest").length;
+const calls = (w) => w.model.calls("suggest").length;
 
 /** bb dispatches the first message of thread `id`, which is still pending, from `origin`. */
 async function started(w, id, origin) {

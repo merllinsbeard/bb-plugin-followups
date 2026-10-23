@@ -132,9 +132,10 @@ Your recent picks and what you actually sent go into the next suggestions.
 bb plugin install git:https://github.com/MacHatter1/bb-plugin-followups --yes
 ```
 
-Follow-ups appear the next time a thread you wrote in finishes. They run on
-your own Claude login through the `claude` CLI: Haiku 5.5 at max effort until
-you change the `model` and `effort` settings.
+Follow-ups appear the next time a thread you wrote in finishes. Suggestions,
+drafts, and cards default to `gpt-6-luna` at `max` through `codex exec` on your
+ChatGPT login. Set `model` to `claude-haiku-5-5` to use your Claude login.
+An explicitly saved Claude model remains selected after an upgrade.
 
 <details>
 <summary><b>Install from a local clone</b></summary>
@@ -153,8 +154,10 @@ bb plugin install path:$PWD --yes
 - bb **0.45+** (Plugin SDK 0.6.15+)
 - The repository is private, so the installing machine needs GitHub
   credentials with access to it.
-- The `claude` CLI (Claude Code) on the bb server's `PATH`, signed in. Every
-  suggestion, draft and card is a `claude -p` run on that login.
+- The `codex` CLI on the bb server's `PATH`, signed in with ChatGPT. The native
+  suppression flags target codex-cli 0.163.0. For Claude models, the signed-in
+  `claude` CLI is required instead. The plugin removes inherited API-key
+  overrides from Codex calls and preserves HOME and CODEX_HOME.
 - For thread cards, optionally: the `ov` CLI (OpenViking memory), the
   tasks-hub `otask` script and the morning-brief output. A missing source is
   recorded as a gap on the card.
@@ -173,11 +176,11 @@ bb plugin install path:$PWD --yes
 sequenceDiagram
     participant T as Your thread
     participant S as Followups server
-    participant C as claude -p
+    participant C as Selected model CLI
     participant B as Banner
     T->>S: you send a message
     S->>S: read who wrote the new turns
-    S-)C: first message today: build the thread card (background, read-only tools)
+    S-)C: first message today: build the thread card (background, requested read scope)
     T->>S: goes idle with its answer
     S->>S: you wrote here (or switched on), finished, no child threads working?
     S->>C: answer, your prompts, the card, threads around it, your recent picks
@@ -202,10 +205,11 @@ sequenceDiagram
   the thread's card, its parent, children and neighbouring threads, and your
   recent picks. It returns four candidates with a kind; assistant-voice labels
   and duplicates are dropped and the banner shows three.
-- **One lean call.** Each suggestion and draft is one `claude -p` process with
-  no tools, settings, MCP servers or project files, in an empty temporary
-  directory, its output checked against a schema. At most four suggestion
-  calls run at once.
+- **One model call.** Each suggestion and draft is one process in a private
+  temporary directory, with output checked against the same strict schema.
+  The model name selects Codex or Claude. At most four suggestion calls run
+  at once. Codex requires successful completion and reads the final answer
+  only from its output file.
 - **Stale work stops.** Send a message, dismiss the banner, switch the thread
   off, or let it work again, and the call drafting for the old answer is
   killed at once. A late result is dropped.
@@ -221,21 +225,27 @@ The full detail, including timings, edge cases and cleanup rules, is in
 - ✋ **Never sends.** A follow-up only fills the composer. You press send.
 - 📝 **Never overwrites what you typed.** A draft replaces an empty composer,
   or its own unedited draft. Anything else gets the draft added below.
-- 🔒 **Suggestions and drafts can't act.** Their `claude -p` call has no tools
-  (`--tools ""`), no settings or MCP servers, and runs in an empty temporary
-  directory that is removed afterwards. The conversation is passed as material,
-  never as instructions.
-- 🗂️ **Cards can only read.** A card run may read files under the thread's
-  environment directory and run `ov find`, nothing else (`--restricted`, only
-  `Bash(ov find:*)` allowed, 12 turns, 240 s). Of your task matrix it only ever
-  sees open «Срочно и важно» and «Важно, несрочно» cards. `bb followups stats`
-  counts runs in which a tool call was refused.
+- 🔒 **Prompt-only suggestions and drafts.** Claude disables tools with
+  `--tools ""`. Codex disables shell execution, web search, apps, plugins,
+  memory, delegation, images, and browser features, and uses a read-only
+  sandbox. Code-mode `exec` remains available and is absent from JSONL, so
+  this does not establish a zero-tool boundary. Both receive a no-tools
+  instruction and the conversation as source material.
+- 🗂️ **Cards request limited exploration.** Claude keeps its restricted
+  readers and `ov find` allowlist. Codex uses a network-enabled workspace-write
+  sandbox with a private working directory and no writable project added.
+  Its project read scope, `ov find` restriction, step budget, and per-command
+  timeout are instructions. Other host-readable files and remote APIs remain
+  reachable. Both enforce the 240-second whole-call deadline by killing the
+  process group. See the [enforcement table](docs/CARD.md#exploration-limits).
 - 💸 **Spends tokens on purpose.** Every finished thread you write in gets one
   suggestion call, at most four at once, and a click one draft call. Cards run
   at most once a day per thread unless the suggestions flag one as stale, at
   most two at once. The footer shows each run's cost; `stats` sums the cards.
-- 🧹 **Leaves nothing behind.** No threads are spawned. `bb followups cleanup`
-  deletes the hidden worker threads earlier releases left.
+- 🧹 **Cleans up completed calls.** Each call removes its temporary files after
+  the process closes. A plugin-host crash can leave a child or temporary files.
+  No worker threads are spawned. `bb followups cleanup` deletes hidden workers
+  earlier releases left.
 - 🙅 **No agent tools.** Agents can't write follow-ups. The banner is yours.
 
 ## CLI
@@ -257,8 +267,8 @@ bb followups stats                  # how often a suggestion became your message
 | `show <thread-id>` | The stored follow-ups with their kinds, and what the run cost. Says why a thread gets none. |
 | `clear <thread-id>` | Clear them. |
 | `on <thread-id>` / `off <thread-id>` | Turn follow-ups on or off for one thread, whoever writes in it. `on` drafts right away for a finished thread. |
-| `model` | Show the model and effort every call uses. |
-| `model-clear` | Reset the model and effort to their defaults. |
+| `model` | Show the model, effort, and provider route every call uses. |
+| `model-clear` | Reset the model and effort to `gpt-6-luna` and `max`. |
 | `regenerate <thread-id>` | Draft a thread's follow-ups again now, and print where the time went. Refuses a thread that gets none, is still running, or is waiting on child threads. If a call is already running, that one is stopped and this waits for its own run. |
 | `draft <thread-id> <suggestion-id>` | Run the draft step for one follow-up, with the same timing breakdown. Not counted as your pick. |
 | `card <thread-id> [--refresh]` | The thread's card and its last build. `--refresh` builds it now and waits. |
@@ -283,7 +293,7 @@ asked, how to read a thread's card, and to leave the settings to you.
 
 | Setting | Default | |
 | --- | --- | --- |
-| `model` | `claude-haiku-5-5` | The Claude model for suggestions, drafts and cards (`claude -p --model`). |
+| `model` | `gpt-6-luna` | `gpt-*` selects Codex. `claude-*`, `haiku`, `sonnet`, and `opus` select Claude. Unknown names produce an error without starting a call. |
 | `effort` | `max` | Thinking effort for every call: `low`, `medium`, `high`, `xhigh` or `max`. |
 | `card` | `true` | Build thread cards in the background and use them in suggestions. |
 | `cardRuns` | `2` | How many cards may be built at once (1 to 3). |
@@ -311,7 +321,7 @@ bb plugin enable followups
 
 ```sh
 npm install
-npm test                           # node:test on the SDK's fake plugin host, with a fake `claude`
+npm test                           # node:test on the SDK's fake plugin host, with fake `codex` and `claude` CLIs
 npm run typecheck
 bb plugin build                    # dist/server.js, dist/app.js, dist/app.css
 bb plugin install path:$PWD --yes
@@ -321,7 +331,7 @@ bb plugin dev                      # rebuild and reload on every save
 ```
 server.ts               events, gates, storage, RPC and the CLI
 app.tsx                 the banner and the header switch
-lib/claude.ts           the one way the plugin calls a model: `claude -p`
+lib/model.ts            model choice, transports, process lifetime, output validation
 lib/thread-context.ts   who wrote each turn, and what the calls see of a thread
 lib/start-origin.ts     how a thread was started, from bb's dispatch hook
 lib/suggest.ts          suggestion and draft prompts, and picking three
@@ -330,15 +340,16 @@ lib/card*.ts            thread cards and their public contract
 lib/banner-*.ts         the banner's per-thread memory and collapse state
 components/             Button, BB's Icon, and Glyph (Hugeicons drawn directly)
 skills/                 the bundled agent skill
-tests/                  node:test suites; tests/fake-claude stands in for the CLI
+tests/                  node:test suites and fake Codex and Claude CLIs
 docs/                   design notes, the card contract, logo
 ```
 
 **Tests** run the whole server on the SDK's fake plugin host with Node's
 built-in test runner (Node 22.18+, which runs the `.ts` sources directly; no
-extra packages). `tests/fake-claude/claude` goes first on `PATH`: it logs each
-call's arguments and input and answers from per-test fixtures, with delays,
-gates and failures. Tests that start it need an executable temporary directory
+extra packages). `tests/fake-codex/codex` and `tests/fake-claude/claude` go first
+on `PATH`. They log each call and answer from fixtures. Codex fixtures cover
+chunked JSONL, completion, strict schemas, final files, errors, and cancellation
+of descendants. Both providers drive suggestions, drafts, and cards. Tests that start it need an executable temporary directory
 (`TMPDIR=… npm test` where `/tmp` is `noexec`).
 [docs/DESIGN.md](docs/DESIGN.md#tests) lists what each file covers.
 

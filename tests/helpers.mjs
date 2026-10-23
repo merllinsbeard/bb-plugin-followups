@@ -1,6 +1,6 @@
 // Shared by the test files that run the plugin on the SDK's fake host (not a test itself:
 // `npm test` only picks up *.test.mjs). `boot` gives a fake BB with threads, their turn
-// events and plugin metadata, and puts the fake `claude` (tests/fake-claude) first on PATH.
+// events and plugin metadata, and puts both fake model CLIs first on PATH.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -31,7 +31,7 @@ export function alive(pid) {
   }
 }
 
-const FAKE_BIN = fileURLToPath(new URL("./fake-claude", import.meta.url));
+const FAKE_BINS = ["./fake-codex", "./fake-claude"].map((path) => fileURLToPath(new URL(path, import.meta.url)));
 
 export const CANDIDATES = [
   { label: "Add a test for the empty queue", why: "The answer says the empty queue is untested", kind: "check" },
@@ -48,18 +48,18 @@ export const DRAFT = "Please add a test for the empty queue case.";
 export function suggested(...firsts) {
   const own = firsts.map((item) => ({ kind: "continue", why: `Because of ${typeof item === "string" ? item : item.label}`, ...(typeof item === "string" ? { label: item } : item) }));
   const rest = CANDIDATES.filter((candidate) => !own.some((item) => item.label === candidate.label));
-  return { candidates: [...own, ...rest].slice(0, 4), cardStale: false };
+  return { candidates: [...own, ...rest].slice(0, 4), cardStale: false, staleReason: null };
 }
 
 /**
- * Put the fake `claude` first on PATH with a fresh directory for its call log and answers.
- * `answer(fixtures)` replaces what it answers (see tests/fake-claude/claude); `calls(kind)`
+ * Put the fake model CLIs first on PATH with a fresh directory for its call log and answers.
+ * `answer(fixtures)` replaces what it answers (see tests/fake-model.mjs); `calls(kind)`
  * reads what it was sent; `open(name)` releases the calls gated on `gate(name)`.
  */
-export async function fakeClaude(fixtures) {
-  const dir = await mkdtemp(join(tmpdir(), "followups-claude-"));
-  process.env.FAKE_CLAUDE_DIR = dir;
-  if (!process.env.PATH.split(delimiter).includes(FAKE_BIN)) process.env.PATH = `${FAKE_BIN}${delimiter}${process.env.PATH}`;
+export async function fakeModel(fixtures) {
+  const dir = await mkdtemp(join(tmpdir(), "followups-fake-"));
+  process.env.FAKE_MODEL_DIR = dir;
+  for (const bin of FAKE_BINS) if (!process.env.PATH.split(delimiter).includes(bin)) process.env.PATH = `${bin}${delimiter}${process.env.PATH}`;
   const answer = (next) => writeFileSync(join(dir, "fixtures.json"), JSON.stringify(next));
   answer(fixtures);
   return {
@@ -104,14 +104,14 @@ const defaultAnswers = () => ({
  * A fake BB. `threads` maps id -> { status, parent, visibility, title, projectId, sectionId,
  * originPluginId, environmentId, answer, turns }. `turns` are the thread's turn requests,
  * `{ initiator, source, sender, text, at }`, and its agent's messages, `{ reply }`; by default one
- * `user`/`spawn` turn that started it (an owner's for a root thread, an agent's spawn for a child). `claude` overrides the fake
- * claude's answers; `metadata` seeds stored plugin metadata (`{ [pluginId]: { [threadId]: … } }`
+ * `user`/`spawn` turn that started it (an owner's for a root thread, an agent's spawn for a child). `answers` overrides the fake
+ * model answers; `metadata` seeds stored plugin metadata (`{ [pluginId]: { [threadId]: … } }`
  * or, for this plugin, `{ [threadId]: … }`). `environments` maps environment id -> path.
  * Thread cards are off unless a test turns them on (`settings: { card: true }`), so only the
  * card tests start card runs.
  */
-export async function boot({ threads = { t1: {} }, settings = {}, claude = {}, metadata = {}, environments = {}, now = Date.now() } = {}) {
-  const fake = await fakeClaude({ ...defaultAnswers(), ...claude });
+export async function boot({ threads = { t1: {} }, settings = {}, answers = {}, metadata = {}, environments = {}, now = Date.now() } = {}) {
+  const fake = await fakeModel({ ...defaultAnswers(), ...answers });
   const world = {
     threads: {},
     metadata: { followups: {} },
@@ -288,7 +288,7 @@ export async function boot({ threads = { t1: {} }, settings = {}, claude = {}, m
     host,
     row,
     rpc,
-    claude: fake,
+    model: fake,
     addThread,
     addTurn,
     shown: (id = "t1") => rpc("followups_get", { threadId: id }),

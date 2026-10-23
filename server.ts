@@ -1,8 +1,8 @@
 // bb-plugin-followups — suggest what to do after a thread finishes.
 //
 // When a visible thread the owner has written in goes idle, the server asks the
-// local `claude` CLI, with no tools, for three short follow-up prompts drawn from
-// the finished answer and the thread around it. Threads only agents have written
+// selected model CLI for short follow-up prompts drawn from the finished answer
+// and the thread around it. Threads only agents have written
 // in get none unless switched on. The banner above the thread composer (app.tsx)
 // shows them as clickable buttons. Clicking one asks for the full, ready-to-send
 // composer draft — the plugin fills the composer, it never sends for you.
@@ -11,7 +11,10 @@
 import { randomUUID } from "node:crypto";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { callClaude, EFFORTS, type CallStats, type Effort, type ModelChoice } from "./lib/claude.ts";
+import {
+  callModel, DEFAULT_MODEL, DEFAULT_EFFORT, describeModel, EFFORTS, ModelCallError, readModelChoice,
+  type CallStats, type ModelChoice,
+} from "./lib/model.ts";
 import { CARD_RUN_MIGRATIONS, createCardService, type CardRunSummary, type CardStatus } from "./lib/card.ts";
 import { renderCard } from "./lib/card-contract.ts";
 import { LEARNING_MIGRATIONS, openLearning, type AcceptanceStats, type Learning } from "./lib/learning.ts";
@@ -50,7 +53,7 @@ export type FollowupSuggestion = z.infer<typeof suggestionSchema>;
 const statsSchema = z
   .object({
     ms: z.number(),
-    /** `claude-code/<model>@<effort>` that ran it. */
+    /** `<provider>/<model>@<effort>` that ran it. */
     model: z.string(),
     totalTokens: z.number().optional(),
     inputTokens: z.number().optional(),
@@ -103,8 +106,6 @@ const META_STATS = "stats";
 /** "on" or "off": this thread's own choice. Absent means the owner rule decides. */
 const META_OVERRIDE = "override";
 
-const DEFAULT_MODEL = "claude-haiku-5-5";
-const DEFAULT_EFFORT: Effort = "max";
 const DEFAULT_CARD_RUNS = 2;
 
 /**
@@ -114,7 +115,7 @@ const DEFAULT_CARD_RUNS = 2;
 const MIGRATIONS = [...LEARNING_MIGRATIONS, ...CARD_RUN_MIGRATIONS];
 /**
  * Suggestion calls running at once. Every visible thread that finishes gets one,
- * so a burst (an agent team finishing together) would otherwise start a `claude`
+ * so a burst (an agent team finishing together) would otherwise start a model
  * process for each thread at the same moment. The rest wait their turn. The
  * message draft for a follow-up the user clicked is never held up by this.
  */
@@ -232,7 +233,7 @@ export default async function plugin(bb: BbPluginApi) {
     model: {
       type: "string",
       label: "Model",
-      description: "Claude model for suggestions and drafts (claude -p --model), run on your own Claude login.",
+      description: "Model for every call. gpt-* uses codex exec on your ChatGPT login. claude-* and haiku, sonnet, opus use your Claude login.",
       default: DEFAULT_MODEL,
     },
     effort: {
@@ -257,19 +258,29 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
   type SettingValues = { model?: unknown; effort?: unknown; card?: unknown; cardRuns?: unknown };
-  const readChoice = (values: SettingValues): ModelChoice => ({
-    model: typeof values.model === "string" && values.model.trim() !== "" ? values.model.trim() : DEFAULT_MODEL,
-    effort: EFFORTS.find((effort) => effort === values.effort) ?? DEFAULT_EFFORT,
-  });
+  type ChoiceState = { readonly ok: true; readonly choice: ModelChoice } | { readonly ok: false; readonly error: ModelCallError };
+  const readChoice = (values: SettingValues): ChoiceState => {
+    try {
+      return { ok: true, choice: readModelChoice(values) };
+    } catch (error) {
+      if (!(error instanceof ModelCallError)) throw error;
+      bb.log.warn(`followups model setting: ${error.message}`);
+      return { ok: false, error };
+    }
+  };
   const readCards = (values: SettingValues) => ({
     enabled: values.card !== false,
     runs: typeof values.cardRuns === "number" && Number.isFinite(values.cardRuns) ? values.cardRuns : DEFAULT_CARD_RUNS,
   });
   const initialSettings = await settingsHandle.get();
-  let choice = readChoice(initialSettings);
+  let choiceState = readChoice(initialSettings);
+  const getChoice = (): ModelChoice => {
+    if (!choiceState.ok) throw choiceState.error;
+    return choiceState.choice;
+  };
   let cardSettings = readCards(initialSettings);
   settingsHandle.onChange((next) => {
-    choice = readChoice(next as SettingValues);
+    choiceState = readChoice(next as SettingValues);
     cardSettings = readCards(next as SettingValues);
   });
 
@@ -297,7 +308,7 @@ export default async function plugin(bb: BbPluginApi) {
     db = null;
     bb.log.warn(`followups won't learn from what you pick: its database can't be opened: ${errorMessage(error)}`);
   }
-  const cards = createCardService({ bb, db, context, settings: () => ({ ...cardSettings, choice }) });
+  const cards = createCardService({ bb, db, context, settings: () => cardSettings, choice: getChoice });
 
   /** The card as the suggestion and draft calls see it; none while cards are off or unreadable. */
   async function cardTextFor(threadId: string): Promise<string | null> {
@@ -338,7 +349,7 @@ export default async function plugin(bb: BbPluginApi) {
   /**
    * One per thread with a suggestion call in flight: aborted when it stops being
    * wanted (the thread moved on, a newer answer is queued, follow-ups were turned
-   * off), which kills its `claude` process now instead of letting it run to the end.
+   * off), which kills its model process now instead of letting it run to the end.
    */
   const draftAborts = new Map<string, AbortController>();
 
@@ -809,14 +820,14 @@ export default async function plugin(bb: BbPluginApi) {
         return;
       }
       const hasOpenQuestions = openQuestions(lastAssistantText);
-      const { value, stats } = await callClaude(
+      const { value, stats } = await callModel(
         suggestCall({
           ctx,
           cardText,
           answer: lastAssistantText,
           hasOpenQuestions,
           examples: examplesFor(threadId, ctx.thread.projectId),
-          choice,
+          choice: getChoice(),
           signal: abort.signal,
         }),
       );
@@ -916,14 +927,14 @@ export default async function plugin(bb: BbPluginApi) {
       const [ctx, cardText] = await Promise.all([context.read(threadId), cardTextFor(threadId)]);
       clock.lap("context");
       if (cancel.isStale()) throw gone(); // before a call is started for it
-      const { value, stats } = await callClaude(
+      const { value, stats } = await callModel(
         draftCall({
           ctx,
           cardText,
           answer,
           hasOpenQuestions: openQuestions(answer),
           examples: examplesFor(threadId, ctx.thread.projectId),
-          choice,
+          choice: getChoice(),
           signal: cancel.signal,
           picked: { label: picked.label, kind: picked.kind ?? null, why: picked.why ?? null },
         }),
@@ -1141,16 +1152,18 @@ export default async function plugin(bb: BbPluginApi) {
         }
         case "model": {
           if (args.length !== 0) break;
+          const choice = getChoice();
           return reply(
-            { model: choice.model, effort: choice.effort },
-            `${choice.model} at ${choice.effort} effort, through claude -p on your Claude login.`,
+            { model: choice.model, effort: choice.effort, provider: choice.provider },
+            describeModel(choice),
           );
         }
         case "model-clear": {
           if (args.length !== 0) break;
-          choice = readChoice(await settingsHandle.experimental_set({ model: null, effort: null }));
+          choiceState = readChoice(await settingsHandle.experimental_set({ model: null, effort: null }));
+          const choice = getChoice();
           return reply(
-            { model: choice.model, effort: choice.effort },
+            { model: choice.model, effort: choice.effort, provider: choice.provider },
             `Model reset to ${choice.model} at ${choice.effort} effort.`,
           );
         }
@@ -1263,7 +1276,7 @@ export default async function plugin(bb: BbPluginApi) {
     for (const timer of settleTimers.values()) clearTimeout(timer);
     settleTimers.clear();
     // Calls in flight would otherwise carry on against a dead API handle once
-    // this returns: kill their `claude` processes now.
+    // this returns: kill their model processes now.
     for (const abort of draftAborts.values()) abort.abort();
     for (const aborts of expandAborts.values()) for (const abort of aborts) abort.abort();
     bb.log.info("disposed");
