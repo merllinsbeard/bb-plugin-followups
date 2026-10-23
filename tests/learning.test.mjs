@@ -98,8 +98,8 @@ test("his recent choices go into the next prompt", async () => {
   await picked(w);
   await sends(w, DRAFT);
   await w.idle("t1", "Added the test. Want me to commit?");
-  await until(() => w.claude.calls("suggest").length === 2);
-  const { stdin } = w.claude.calls("suggest")[1];
+  await until(() => w.model.calls("suggest").length === 2);
+  const { stdin } = w.model.calls("suggest")[1];
   assert.match(stdin, /<example outcome="sent-as-is">\nshown: 1\) \[check\] Add a test for the empty queue; 2\) \[close\] Commit the fix; 3\) \[continue\] Retry path next\npicked: 1\nsent: Please add a test for the empty queue case\.\n<\/example>/);
   await w.dispose();
 });
@@ -125,7 +125,7 @@ test("what was learned survives a reload", async () => {
   const result = await next.harness.runCli(["stats", "--json"]);
   assert.equal(JSON.parse(result.stdout).sentAsIs, 1);
   await next.harness.dispose();
-  await w.claude.cleanup();
+  await w.model.cleanup();
 });
 
 // ---- storage stays bounded ----

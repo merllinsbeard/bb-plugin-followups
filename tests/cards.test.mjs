@@ -1,6 +1,6 @@
 // When the owner writes in a thread, a background run builds a short card about it (task,
 // project, related goals, earlier decisions) that suggestions and other plugins read. Runs are
-// few, confined and logged; suggestions never wait for one. Run with `npm test`.
+// few and logged; suggestions never wait for one. Run with `npm test`.
 //
 // HOME points at a fixture tree with a fake `otask` and morning briefs (all text made up here).
 import assert from "node:assert/strict";
@@ -54,7 +54,7 @@ afterEach(() => {
 });
 
 const cardsOn = (options = {}) => boot({ ...options, settings: { card: true, ...options.settings } });
-const cardCalls = (w) => w.claude.calls("card");
+const cardCalls = (w) => w.model.calls("card");
 const card = (w, id = "t1") => w.meta(id).card;
 /** A card stored for t1 as an earlier run left it. */
 const stored = (overrides = {}) => ({
@@ -85,11 +85,11 @@ test("the owner's first message today builds one card with the v1 shape", async 
   await w.dispose();
 });
 
-test("the run may only read the project and run `ov find`, with each call capped", async () => {
+test("Claude retains restricted readers and the ov find command cap", async () => {
   ownerHome();
   const project = join(home, "project");
   mkdirSync(project);
-  const w = await cardsOn({ environments: { e: project } });
+  const w = await cardsOn({ environments: { e: project }, settings: { model: "claude-haiku-5-5" } });
   await w.say("t1", "Build the parser");
   await until(() => card(w));
   const [call] = cardCalls(w);
@@ -154,7 +154,7 @@ test("the run reads each of the owner's prompts after the agent message it answe
 
 test("a gap the model restates in its own words is listed once", async () => {
   ownerHome({ briefs: {} });
-  const w = await cardsOn({ claude: { card: { output: { ...CARD_DRAFT, gaps: ["focus: брифа на сегодня нет", "ov: timeout", "ov: timeout"] } } } });
+  const w = await cardsOn({ answers: { card: { output: { ...CARD_DRAFT, gaps: ["focus: брифа на сегодня нет", "ov: timeout", "ov: timeout"] } } } });
   await w.say("t1", "Build the parser");
   await until(() => card(w));
   assert.deepEqual(card(w).gaps, ["focus: no brief today", "project files: not on this machine", "ov: timeout"]);
@@ -164,30 +164,30 @@ test("a gap the model restates in its own words is listed once", async () => {
 test("suggestions don't wait for a card run, and the next ones carry the card", async () => {
   ownerHome();
   const w = await cardsOn();
-  w.claude.answer({ suggest: { output: suggested() }, card: { output: CARD_DRAFT, gate: w.claude.gate("card") } });
+  w.model.answer({ suggest: { output: suggested() }, card: { output: CARD_DRAFT, gate: w.model.gate("card") } });
   await w.say("t1", "Build the parser");
   await until(() => cardCalls(w).length === 1);
   await w.idle();
   await w.untilReady();
-  assert.match(w.claude.calls("suggest")[0].stdin, /<card>\n\(no card yet\)\n<\/card>/);
-  w.claude.open("card");
+  assert.match(w.model.calls("suggest")[0].stdin, /<card>\n\(no card yet\)\n<\/card>/);
+  w.model.open("card");
   await until(() => card(w));
   await w.idle("t1", "Another answer.");
-  await until(() => w.claude.calls("suggest").length === 2);
-  assert.match(w.claude.calls("suggest")[1].stdin, /<card>\nКарточка треда[^]*Задача: Научить подсказки видеть карточку треда/);
+  await until(() => w.model.calls("suggest").length === 2);
+  assert.match(w.model.calls("suggest")[1].stdin, /<card>\nКарточка треда[^]*Задача: Научить подсказки видеть карточку треда/);
   await w.dispose();
 });
 
 test("more messages while a card is building don't start another run", async () => {
   ownerHome();
   const w = await cardsOn();
-  w.claude.answer({ card: { output: CARD_DRAFT, gate: w.claude.gate("card") } });
+  w.model.answer({ card: { output: CARD_DRAFT, gate: w.model.gate("card") } });
   await w.say("t1", "Build the parser");
   await until(() => cardCalls(w).length === 1);
   await w.say("t1", "And the lexer");
   await w.say("t1", "Quickly");
   await sleep(200);
-  w.claude.open("card");
+  w.model.open("card");
   await until(() => card(w));
   await w.say("t1", "Thanks");
   await sleep(300);
@@ -198,15 +198,15 @@ test("more messages while a card is building don't start another run", async () 
 test("no more than two cards build at once; the third waits its turn", async () => {
   ownerHome();
   const w = await cardsOn({ threads: { a: {}, b: {}, c: {} } });
-  w.claude.answer({ card: ["1", "2", "3"].map((n) => ({ output: CARD_DRAFT, gate: w.claude.gate(n) })) });
+  w.model.answer({ card: ["1", "2", "3"].map((n) => ({ output: CARD_DRAFT, gate: w.model.gate(n) })) });
   for (const id of ["a", "b", "c"]) await w.say(id, "Go");
   await until(() => cardCalls(w).length === 2);
   await sleep(300);
   assert.equal(cardCalls(w).length, 2);
-  w.claude.open("1");
+  w.model.open("1");
   await until(() => cardCalls(w).length === 3);
-  w.claude.open("2");
-  w.claude.open("3");
+  w.model.open("2");
+  w.model.open("3");
   await until(() => ["a", "b", "c"].every((id) => card(w, id)));
   await w.dispose();
 });
@@ -230,7 +230,7 @@ test("a card the suggestions call stale is rebuilt once it is an hour old", asyn
   ownerHome();
   const flagged = { ...suggested(), cardStale: true, staleReason: "The thread moved to the lexer" };
   for (const [age, rebuilt] of [[10 * 60_000, false], [2 * HOUR, true]]) {
-    const w = await cardsOn({ claude: { suggest: { output: flagged } }, metadata: { t1: { card: stored({ builtAt: Date.now() - age }) } } });
+    const w = await cardsOn({ answers: { suggest: { output: flagged } }, metadata: { t1: { card: stored({ builtAt: Date.now() - age }) } } });
     await w.idle();
     await w.untilReady();
     await until(() => typeof w.meta().cardStaleAt === "number");
@@ -246,16 +246,16 @@ test("a card the suggestions call stale is rebuilt once it is an hour old", asyn
 
 test("a failed run is shown, and the next try waits 15 minutes", async () => {
   ownerHome();
-  const w = await cardsOn({ claude: { card: { fail: "exit" } } });
+  const w = await cardsOn({ answers: { card: { fail: "exit" } } });
   await w.say("t1", "Build the parser");
   await until(() => w.meta().cardAttempt);
   assert.equal(w.meta().cardAttempt.ok, false);
-  assert.match((await w.cli("card", "t1")).stdout, /No card for t1 yet\.\nLast build failed at .*: The claude CLI returned no JSON/);
+  assert.match((await w.cli("card", "t1")).stdout, /No card for t1 yet\.\nLast build failed at .*: The codex CLI exited 1/);
   await w.say("t1", "Try again");
   await sleep(300);
   assert.equal(cardCalls(w).length, 1, "no retry within 15 minutes");
   w.world.metadata.followups.t1.cardAttempt.at = Date.now() - 16 * 60_000;
-  w.claude.answer({ card: { output: CARD_DRAFT } });
+  w.model.answer({ card: { output: CARD_DRAFT } });
   await w.say("t1", "Try again");
   await until(() => card(w));
   assert.equal(cardCalls(w).length, 2);
@@ -273,7 +273,7 @@ test("a reloaded plugin doesn't build today's card again", async () => {
   await sleep(300);
   assert.equal(cardCalls(w).length, 1);
   await next.harness.dispose();
-  await w.claude.cleanup();
+  await w.model.cleanup();
 });
 
 test("`card --refresh` builds now and waits; `cards` lists them, by project and day", async () => {
@@ -293,7 +293,7 @@ test("`card --refresh` builds now and waits; `cards` lists them, by project and 
 
 test("`stats` shows what card runs cost, and any refused tool call", async () => {
   ownerHome();
-  const w = await cardsOn({ claude: { card: { output: CARD_DRAFT, denials: ["Bash"] } } });
+  const w = await cardsOn({ settings: { model: "claude-haiku-5-5" }, answers: { card: { output: CARD_DRAFT, denials: ["Bash"] } } });
   await w.say("t1", "Build the parser");
   await until(() => card(w));
   const { cards } = JSON.parse((await w.cli("stats", "--json")).stdout);
@@ -315,7 +315,7 @@ test("with cards turned off, nothing is built and suggestions get no card", asyn
   await w.idle();
   await w.untilReady();
   assert.equal(cardCalls(w).length, 0);
-  assert.match(w.claude.calls("suggest")[0].stdin, /<card>\n\(no card yet\)\n<\/card>/);
+  assert.match(w.model.calls("suggest")[0].stdin, /<card>\n\(no card yet\)\n<\/card>/);
   assert.equal((await w.cli("card", "t1", "--refresh")).exitCode, 1);
   await w.dispose();
 });

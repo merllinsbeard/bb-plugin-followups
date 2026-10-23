@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { boot, sleep, suggested, until } from "./helpers.mjs";
 
-const calls = (w) => w.claude.calls("suggest").length;
+const calls = (w) => w.model.calls("suggest").length;
 
 test("by default a thread has follow-ups on", async () => {
   const w = await boot();
@@ -55,7 +55,7 @@ test("turning a finished thread on drafts from its latest answer right away", as
   assert.deepEqual(await w.setEnabled(true), { enabled: true });
   await w.untilReady();
   assert.equal((await w.shown()).enabled, true);
-  assert.match(w.claude.calls("suggest")[0].stdin, /t1's answer\./);
+  assert.match(w.model.calls("suggest")[0].stdin, /t1's answer\./);
   await w.dispose();
 });
 
@@ -160,9 +160,9 @@ test("`bb followups regenerate` refuses a thread that is off and makes no call",
 
 test("`bb followups regenerate` while a call is running waits for its own run, and reports that one", async () => {
   const w = await boot();
-  w.claude.answer({
+  w.model.answer({
     suggest: [
-      { output: suggested("Old"), gate: w.claude.gate("first") },
+      { output: suggested("Old"), gate: w.model.gate("first") },
       { output: suggested("Add a test") },
     ],
   });

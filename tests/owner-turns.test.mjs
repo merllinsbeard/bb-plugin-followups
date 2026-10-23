@@ -1,12 +1,12 @@
 // Follow-ups are for threads the owner writes in. A thread only agents have written in (a child
 // an agent spawned and talks to, a plugin's run) gets none unless it is switched on, and no
-// `claude` call is made for it. Run with `npm test`.
+// model call is made for it. Run with `npm test`.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { turnAuthor } from "../lib/thread-context.ts";
 import { boot, sleep } from "./helpers.mjs";
 
-const calls = (w) => w.claude.calls("suggest").length;
+const calls = (w) => w.model.calls("suggest").length;
 const turn = (initiator, source, sender = null) => ({ seq: 1, at: 0, initiator, source, senderThreadId: sender, text: "" });
 const root = { parentThreadId: null, originPluginId: null };
 const child = { parentThreadId: "boss", originPluginId: null };

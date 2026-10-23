@@ -3,7 +3,7 @@
 // Pure: server.ts gathers the inputs and runs the calls.
 
 import { z } from "zod";
-import type { ClaudeCall, ModelChoice } from "./claude.ts";
+import type { ModelCall, ModelChoice } from "./model.ts";
 import type { BangkokNow, SiblingLine, ThreadContext } from "./thread-context.ts";
 
 /** Closed set. `answer` is one reply settling every open question or choice, with the agent's recommendations. */
@@ -25,7 +25,7 @@ export const suggestOutputSchema = z
     candidates: z.array(candidateSchema).length(4),
     /** True when the card's project, task or role contradicts the conversation. */
     cardStale: z.boolean(),
-    staleReason: z.string().max(140).optional(),
+    staleReason: z.string().max(140).nullable(),
   })
   .strict();
 export type SuggestOutput = z.infer<typeof suggestOutputSchema>;
@@ -97,7 +97,7 @@ const SUGGEST_SYSTEM = [
   COMPLETED_WORK_RULE,
   "- Read <now> before anything time-bound; never suggest something whose time has passed.",
   "- <examples>, when present, show what he picked before and what he actually sent: match that voice and those choices.",
-  "- cardStale: true only when the card's project, task or role contradicts the conversation; then say why in staleReason.",
+  "- cardStale: true only when the card's project, task or role contradicts the conversation; then say why in staleReason. Otherwise return staleReason: null.",
   "",
   SUGGEST_REVIEW,
   MATERIAL_RULE,
@@ -171,7 +171,7 @@ function renderThread(input: SuggestInput, answerChars: number): string {
   ].join("\n\n");
 }
 
-export function suggestCall(input: SuggestInput): ClaudeCall<SuggestOutput> {
+export function suggestCall(input: SuggestInput): ModelCall<SuggestOutput> {
   return {
     purpose: "suggest",
     choice: input.choice,
@@ -184,7 +184,7 @@ export function suggestCall(input: SuggestInput): ClaudeCall<SuggestOutput> {
   };
 }
 
-export function draftCall(input: SuggestInput & { readonly picked: Picked }): ClaudeCall<{ message: string }> {
+export function draftCall(input: SuggestInput & { readonly picked: Picked }): ModelCall<{ message: string }> {
   const { picked } = input;
   return {
     purpose: "draft",
